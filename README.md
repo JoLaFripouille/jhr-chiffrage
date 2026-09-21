@@ -36,7 +36,13 @@ Le dépôt et les archives ne contiennent ni affaires, ni sauvegardes, ni captur
 - Ubuntu : `~/.local/share/JHRChiffrage/chiffrage.sqlite3`, ou le répertoire XDG personnalisé.
 - Autre emplacement : variable `JHR_CHIFFRAGE_DB`.
 
-GitHub met à jour le logiciel, pas les affaires. Pour transporter les affaires, utiliser **Paramètres → Créer une sauvegarde locale**, puis transférer cette copie séparément. Ne pas synchroniser une base ouverte via OneDrive. Il n'y a pas encore de synchronisation automatique ni de serveur de données partagé.
+GitHub met à jour le logiciel, pas les affaires. En mode local, utiliser **Paramètres → Créer une sauvegarde des données** pour transporter une copie séparément. Ne pas synchroniser une base ouverte via OneDrive.
+
+## Serveur partagé (version 0.2)
+
+Un PC peut conserver la base commune pour les applications Windows/Ubuntu et leur agent IA. Dans **Paramètres → Configurer la connexion**, choisir le serveur, l'adresse HTTPS, la clé d'accès et le certificat public. Tester puis relancer. Le serveur doit être disponible ; aucun basculement local silencieux n'est effectué en cas de coupure.
+
+[Installer et utiliser le serveur](SERVEUR.md). Les certificats privés, clés d'accès et configurations personnelles restent hors du dépôt. Cette première version utilise une clé partagée, sans comptes individuels, et vise le réseau local.
 
 ## Agent IA / MCP
 

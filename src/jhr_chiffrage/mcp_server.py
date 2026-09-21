@@ -11,6 +11,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field
 
 from .core import DomainError, MAX_DURATION_MINUTES, Store, calculate
+from .connection import open_store
 
 Revision = Annotated[int, Field(ge=1)]
 OperationId = Annotated[str, Field(min_length=1, max_length=200)]
@@ -95,7 +96,7 @@ def build_server(store: Store | None = None, access: str | None = None) -> FastM
     profile = access if access is not None else os.environ.get("JHR_MCP_ACCESS", "draft")
     if profile not in {"read", "draft", "full"}:
         raise ValueError("JHR_MCP_ACCESS must be read, draft or full")
-    database = store if store is not None else Store(os.environ.get("JHR_CHIFFRAGE_DB") or None)
+    database = store if store is not None else open_store()
     server = FastMCP("JHR Chiffrage", instructions=(
         "Chiffrage local en EUR. Les montants calculés sont en centimes. "
         "Lire la révision avant toute modification; réutiliser operation_id uniquement "

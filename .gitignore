@@ -19,6 +19,9 @@
 !/scripts/build_linux_bundle.py
 !/scripts/build_windows.ps1
 !/scripts/smoke_packaged_mcp.py
+!/scripts/setup_server.py
+!/scripts/smoke_server_https.py
+!/SERVEUR.md
 __pycache__/
 .pytest_cache/
 *.egg-info/

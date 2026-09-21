@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 from .core import Store, calculate, DomainError, clone_items
 from .theme import LIGHT_THEME
+from .connection import load_connection, save_connection, open_store, RemoteStore
 
 
 def uid():
@@ -427,10 +428,82 @@ class TemplateDialog(QDialog):
         self.accept()
 
 
+class ConnectionDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Connexion aux données")
+        self.setMinimumWidth(560)
+        self.setStyleSheet(LIGHT_THEME)
+        try:
+            config = load_connection()
+        except DomainError:
+            config = {"mode": "server"}
+        form = QFormLayout(self)
+        self.mode = CalculationComboBox()
+        self.mode.addItem("Sur cet ordinateur", "local")
+        self.mode.addItem("Serveur partagé", "server")
+        self.mode.setCurrentIndex(1 if config["mode"] == "server" else 0)
+        form.addRow("Données", self.mode)
+        self.url = QLineEdit(config.get("url", ""))
+        self.url.setPlaceholderText("https://adresse-du-serveur:8765")
+        self.token = QLineEdit(config.get("token", ""))
+        self.token.setEchoMode(QLineEdit.Password)
+        self.ca_file = QLineEdit(config.get("ca_file", ""))
+        form.addRow("Adresse HTTPS", self.url)
+        form.addRow("Clé d’accès", self.token)
+        certificate = QHBoxLayout()
+        certificate.addWidget(self.ca_file)
+        button("Choisir…", self.choose_certificate, certificate)
+        form.addRow("Certificat du serveur", certificate)
+        self.result_label = QLabel("Le changement s’appliquera au prochain lancement.\nAucune affaire n’est copiée entre la base locale et le serveur.")
+        self.result_label.setWordWrap(True)
+        form.addRow(self.result_label)
+        test = QPushButton("Tester la connexion")
+        test.clicked.connect(self.test_connection)
+        form.addRow(test)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Save).setText("Enregistrer la connexion")
+        buttons.accepted.connect(self.validate)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def choose_certificate(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Certificat public du serveur", "", "Certificat (*.pem *.crt)")
+        if path:
+            self.ca_file.setText(path)
+
+    def value(self):
+        return dict(mode=self.mode.currentData(), url=self.url.text().strip(),
+                    token=self.token.text().strip(), ca_file=self.ca_file.text().strip())
+
+    def test_connection(self):
+        try:
+            if self.mode.currentData() == "server":
+                remote = RemoteStore(self.value())
+                try:
+                    remote.health()
+                finally:
+                    remote.close()
+            self.result_label.setText("Connexion réussie." if self.mode.currentData() == "server" else "Mode local sélectionné.")
+            return True
+        except (DomainError, OSError, ValueError) as exc:
+            self.result_label.setText(str(exc))
+            return False
+
+    def validate(self):
+        if not self.test_connection():
+            return
+        try:
+            save_connection(self.value())
+            self.accept()
+        except (DomainError, OSError, ValueError) as exc:
+            self.result_label.setText(str(exc))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, store=None):
         super().__init__()
-        self.store = store or Store()
+        self.store = store if store is not None else open_store()
         self.current = None
         self.dirty = False
         self.settings_dirty = False
@@ -468,7 +541,7 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(3000)
         self.timer.timeout.connect(self.poll)
         self.timer.start()
-        self.statusBar().showMessage("  Données enregistrées sur cet ordinateur  ·  JHR Chiffrage")
+        self.statusBar().showMessage("  Données sur le serveur partagé" if isinstance(self.store, RemoteStore) else "  Données enregistrées sur cet ordinateur  ·  JHR Chiffrage")
         self.new_work_shortcut = QShortcut(QKeySequence("Ctrl+T"), self)
         self.new_work_shortcut.activated.connect(lambda: self.add_work() if self.tabs.currentIndex() == 0 else None)
         self.next_work_shortcut = QShortcut(QKeySequence("Ctrl+Tab"), self)
@@ -696,7 +769,10 @@ class MainWindow(QMainWindow):
         form.addRow(self.vat_enabled)
         layout.addLayout(form)
         button("Enregistrer les paramètres", self.save_settings, layout)
-        button("Créer une sauvegarde locale", self.backup, layout)
+        button("Créer une sauvegarde des données", self.backup, layout)
+        connection_label = QLabel("Connexion actuelle : serveur partagé" if isinstance(self.store, RemoteStore) else "Connexion actuelle : cet ordinateur")
+        layout.addWidget(connection_label)
+        button("Configurer la connexion…", self.configure_connection, layout)
         limits = QLabel("Premier jet : exports JSON, sans PDF, encaissements, TVA par poste ni détail des différents prélèvements.")
         limits.setWordWrap(True)
         layout.addWidget(limits)
@@ -754,10 +830,12 @@ class MainWindow(QMainWindow):
 
     def refresh_lists(self):
         self.refresh_history()
+        estimates = self.store.list_estimates()
+        templates = self.store.list_templates()
         selected = self.current["id"] if self.current else None
         self.estimates.blockSignals(True)
         self.estimates.clear()
-        for estimate in self.store.list_estimates():
+        for estimate in estimates:
             frozen = " • Figée" if estimate["status"] == "frozen" else ""
             item = QListWidgetItem(f"{estimate.get('reference') or 'Sans référence'} — {estimate['name']}{frozen}")
             item.setData(Qt.UserRole, estimate["id"])
@@ -768,7 +846,7 @@ class MainWindow(QMainWindow):
         selected_template = self.templates.currentItem()
         template_id = selected_template.data(Qt.UserRole)["id"] if selected_template else None
         self.templates.clear()
-        for template in self.store.list_templates():
+        for template in templates:
             item = QListWidgetItem(f"{template['name']} — {len(template['items'])} poste(s)")
             item.setData(Qt.UserRole, template)
             self.templates.addItem(item)
@@ -1154,7 +1232,11 @@ class MainWindow(QMainWindow):
         if wi is None:
             QMessageBox.information(self, "Choisir un ouvrage", "Sélectionnez d’abord un ouvrage.")
             return
-        templates = self.store.list_templates()
+        try:
+            templates = self.store.list_templates()
+        except DomainError as exc:
+            self.error(exc)
+            return
         if not templates:
             QMessageBox.information(self, "Aucun gabarit", "Créez un gabarit dans l’onglet Gabarits.")
             return
@@ -1197,6 +1279,13 @@ class MainWindow(QMainWindow):
             path = self.store.backup()
             QMessageBox.information(self, "Sauvegarde créée", str(path))
         except (DomainError, OSError) as exc:
+            self.error(exc)
+
+    def configure_connection(self):
+        try:
+            if ConnectionDialog(self).exec():
+                QMessageBox.information(self, "Connexion enregistrée", "Enregistrez vos modifications, puis fermez et relancez l’application pour utiliser cette connexion.")
+        except (DomainError, OSError, ValueError) as exc:
             self.error(exc)
 
     def poll(self):
@@ -1245,7 +1334,14 @@ def main():
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("JHR Chiffrage")
     app.setStyle("Fusion")
-    window = MainWindow()
+    while True:
+        try:
+            window = MainWindow()
+            break
+        except (DomainError, OSError, ValueError) as exc:
+            QMessageBox.warning(None, "Connexion indisponible", f"Impossible d’ouvrir les données : {exc}\nVérifiez la connexion. Aucune base locale de remplacement n’a été ouverte.")
+            if not ConnectionDialog().exec():
+                return 1
     window.show()
     return app.exec()
 

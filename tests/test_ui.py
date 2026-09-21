@@ -8,6 +8,7 @@ from jhr_chiffrage.core import Store
 from jhr_chiffrage.ui import MainWindow, ItemDialog, uid, duration_text
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
+from jhr_chiffrage import ui
 
 
 @pytest.fixture(scope="module")
@@ -116,6 +117,28 @@ def test_edit_subpost_dialog_preserves_parent(app):
     dialog.validate()
     assert dialog.result() == 1
     assert dialog.value()["parent_id"] == "parent"
+
+
+def test_connection_failure_does_not_save_profile(app, monkeypatch):
+    from jhr_chiffrage.core import DomainError
+    monkeypatch.setattr(ui, "load_connection", lambda: {"mode": "local"})
+    saved, closed = [], []
+    class Unavailable:
+        def __init__(self, config):
+            pass
+        def health(self):
+            raise DomainError("CONNECTION_ERROR", "Serveur indisponible")
+        def close(self):
+            closed.append(True)
+    monkeypatch.setattr(ui, "RemoteStore", Unavailable)
+    monkeypatch.setattr(ui, "save_connection", saved.append)
+    dialog = ui.ConnectionDialog()
+    dialog.mode.setCurrentIndex(1)
+    dialog.validate()
+    assert saved == []
+    assert closed == [True]
+    assert dialog.result() == 0
+    assert "indisponible" in dialog.result_label.text()
 
 
 def test_external_revision_refresh_preserves_dirty(window):

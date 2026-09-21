@@ -1,7 +1,7 @@
 """Shared application services. No dependency on Qt or the MCP transport."""
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -472,7 +472,7 @@ class Store:
             fail("La destination existe déjà. Choisissez un autre nom.")
         target.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as source:
-            with sqlite3.connect(target) as backup_db:
+            with closing(sqlite3.connect(target)) as backup_db:
                 source.backup(backup_db)
                 if backup_db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     fail("La vérification de sauvegarde a échoué.")

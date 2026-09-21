@@ -12,6 +12,7 @@ def main():
     output = root / "dist" / f"{prefix}.zip"
     output.parent.mkdir(exist_ok=True)
     files = [(root / "pyproject.toml", "pyproject.toml"), (root / "README.md", "README.md")]
+    files += [(root / "SERVEUR.md", "SERVEUR.md"), (root / "scripts/setup_server.py", "scripts/setup_server.py")]
     files += [(path, path.relative_to(root).as_posix()) for path in sorted((root / "src/jhr_chiffrage").glob("*.py"))]
     # Local notes may contain personal paths: never package them.
     files += [(root / "packaging/linux" / name, name) for name in ("installer.sh", "install_launcher.py", "LIRE-MOI-UBUNTU.md")]

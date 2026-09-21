@@ -20,6 +20,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0
       - run: python -m pip install ".[test]"
       - run: python -m pytest -q
+      - run: python scripts/smoke_server_https.py
       - run: python scripts/build_linux_bundle.py
       - name: Installation Ubuntu isolée
         if: runner.os == 'Linux'

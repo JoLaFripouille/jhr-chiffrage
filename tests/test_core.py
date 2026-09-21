@@ -7,6 +7,17 @@ from uuid import uuid4
 
 import pytest
 
+
+def test_backup_releases_file_handle(tmp_path):
+    from jhr_chiffrage.core import Store
+    from pathlib import Path
+    store = Store(tmp_path / "original.sqlite3")
+    backup = Path(store.backup())
+    # Windows refuses this rename while a SQLite connection still owns the file.
+    moved = backup.with_name("moved.sqlite3")
+    backup.rename(moved)
+    assert moved.is_file()
+
 from jhr_chiffrage.core import Store, DomainError, calculate, new_item
 
 

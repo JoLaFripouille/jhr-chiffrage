@@ -86,7 +86,14 @@ copies sans les avoir réconciliées. L'installation ne modifie pas cette base.
 Le lanceur MCP est `~/.local/bin/jhr-chiffrage-mcp` ; sa configuration est décrite
 dans le README principal. Il n'est pas ajouté automatiquement à votre agent IA.
 
-## Validation
+## Connexion à un serveur
+
+Version 0.2 : dans **Paramètres → Configurer la connexion**, choisir **Serveur partagé**,
+saisir l'adresse HTTPS et la clé privée d'accès reçues de l'hôte, sélectionner son certificat public,
+puis tester, enregistrer et relancer. Ne pas copier de base locale pour ce mode : les données
+restent sur l'hôte. Voir `SERVEUR.md` à la racine du dépôt ou de l'archive.
+
+## Validation du bureau
 
 La syntaxe de l'installateur est vérifiée sous Ubuntu 24.04 (WSL).
 Le fonctionnement graphique sur votre PC Ubuntu doit encore être vérifié après

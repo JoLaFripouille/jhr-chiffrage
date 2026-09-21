@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jhr-chiffrage"
-version = "0.1.8"
+version = "0.2.0"
 description = "Chiffrage de bureau des études et dessins avec accès MCP"
 requires-python = ">=3.11"
-dependencies = ["PySide6==6.11.2", "mcp==1.30.0", "platformdirs==4.11.11"]
+dependencies = ["PySide6==6.11.2", "mcp==1.30.0", "platformdirs==4.11.11", "httpx>=0.28,<1", "starlette>=0.46,<2", "uvicorn>=0.34,<1", "cryptography>=45,<51"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
@@ -17,6 +17,7 @@ jhr-chiffrage = "jhr_chiffrage.ui:main"
 
 [project.scripts]
 jhr-chiffrage-mcp = "jhr_chiffrage.mcp_server:main"
+jhr-chiffrage-server = "jhr_chiffrage.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
