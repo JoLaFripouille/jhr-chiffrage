@@ -1,4 +1,4 @@
-"""Explicit local/server selection, with verified TLS and no offline fallback."""
+"""Explicit local/server selection and verified TLS transport."""
 from __future__ import annotations
 
 import json
@@ -82,7 +82,10 @@ def save_connection(config, path=None):
 
 def open_store(config=None):
     config = load_connection() if config is None else _validated(config)
-    return RemoteStore(config) if config["mode"] == "server" else Store()
+    if config["mode"] == "server":
+        from .offline import OfflineStore
+        return OfflineStore(config)
+    return Store()
 
 
 class RemoteStore:
@@ -139,6 +142,12 @@ class RemoteStore:
 
     def get_settings(self):
         return self._call("get_settings")
+
+    def sync_snapshot(self):
+        return self._call("sync_snapshot")
+
+    def sync_push(self, changes, operation_id):
+        return self._call("sync_push", dict(changes=changes, operation_id=operation_id), mutation=True)
 
     def save_settings(self, data, expected_revision, actor="ui", operation_id=None):
         return self._call("save_settings", dict(data=data, expected_revision=expected_revision, actor=actor, operation_id=operation_id), mutation=True)

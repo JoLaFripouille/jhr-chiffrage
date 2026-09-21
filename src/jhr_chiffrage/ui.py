@@ -1,4 +1,4 @@
-"""Interface bureau française. Aucune donnée distante ni moteur web."""
+"""Interface bureau française, locale ou synchronisée avec un serveur."""
 from __future__ import annotations
 
 import copy
@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
-from PySide6.QtCore import Qt, QTimer, QPointF, Signal
+from PySide6.QtCore import Qt, QTimer, QThread, QPointF, Signal
 from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPainter, QPen, QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
@@ -501,10 +501,33 @@ class ConnectionDialog(QDialog):
             self.result_label.setText(str(exc))
 
 
+class SyncWorker(QThread):
+    """Run network operations without blocking the Qt event loop."""
+
+    def __init__(self, store, resolve=False, parent=None):
+        super().__init__(parent)
+        self.store = store
+        self.resolve = resolve
+        self.error = None
+        self.backup_path = None
+
+    def run(self):
+        try:
+            if self.resolve:
+                self.backup_path = self.store.resolve_conflict_keep_both()
+            self.store.synchronize()
+        except Exception as exc:
+            self.error = exc
+
+
 class MainWindow(QMainWindow):
     def __init__(self, store=None):
         super().__init__()
         self.store = store if store is not None else open_store()
+        self.sync_enabled = callable(getattr(self.store, "synchronize", None))
+        self.sync_worker = None
+        self.close_after_sync = False
+        self.closing = False
         self.current = None
         self.dirty = False
         self.settings_dirty = False
@@ -547,7 +570,26 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(3000)
         self.timer.timeout.connect(self.poll)
         self.timer.start()
-        self.statusBar().showMessage("  Données sur le serveur partagé" if isinstance(self.store, RemoteStore) else "  Données enregistrées sur cet ordinateur  ·  JHR Chiffrage")
+        if self.sync_enabled:
+            self.sync_status = QLabel()
+            self.sync_status.setWordWrap(True)
+            self.sync_status.setToolTip("Les modifications enregistrées sont conservées sur ce PC puis synchronisées lorsque le serveur est accessible.")
+            self.statusBar().addPermanentWidget(self.sync_status, 1)
+            self.resolve_button = QPushButton("Conserver les deux versions")
+            self.resolve_button.clicked.connect(self.resolve_sync_conflict)
+            self.statusBar().addPermanentWidget(self.resolve_button)
+            self.sync_button = QPushButton("Synchroniser")
+            self.sync_button.setToolTip("Synchroniser les modifications déjà enregistrées.")
+            self.sync_button.clicked.connect(lambda: self.start_sync(manual=True))
+            self.statusBar().addPermanentWidget(self.sync_button)
+            self.sync_timer = QTimer(self)
+            self.sync_timer.setInterval(30000)
+            self.sync_timer.timeout.connect(self.start_sync)
+            self.sync_timer.start()
+            self.update_sync_status()
+            QTimer.singleShot(0, self.start_sync)
+        else:
+            self.statusBar().showMessage("  Données sur le serveur partagé" if isinstance(self.store, RemoteStore) else "  Données enregistrées sur cet ordinateur  ·  JHR Chiffrage")
         self.new_work_shortcut = QShortcut(QKeySequence("Ctrl+T"), self)
         self.new_work_shortcut.activated.connect(lambda: self.add_work() if self.tabs.currentIndex() == 0 else None)
         self.next_work_shortcut = QShortcut(QKeySequence("Ctrl+Tab"), self)
@@ -557,6 +599,67 @@ class MainWindow(QMainWindow):
 
     def error(self, exc):
         QMessageBox.warning(self, "Action non effectuée", str(exc))
+
+    def update_sync_status(self):
+        if not self.sync_enabled:
+            return
+        busy = self.sync_worker is not None
+        text = "Synchronisation en cours…" if busy else self.store.status_text
+        self.sync_status.setText(text)
+        self.sync_status.setStyleSheet("color: #a65a00;" if self.store.has_conflict else "")
+        self.sync_button.setEnabled(not busy)
+        self.resolve_button.setVisible(self.store.has_conflict)
+        self.resolve_button.setEnabled(not busy)
+
+    def start_sync(self, manual=False, resolve=False):
+        if not self.sync_enabled or self.sync_worker is not None or self.close_after_sync or self.closing:
+            return
+        if self.dirty or self.settings_dirty:
+            if manual:
+                QMessageBox.information(self, "Modifications non enregistrées", "Enregistrez vos modifications avant de synchroniser.")
+            return
+        if QApplication.activeModalWidget() and not manual:
+            return
+        self.sync_worker = SyncWorker(self.store, resolve=resolve, parent=self)
+        self.sync_worker.finished.connect(lambda: self.finish_sync(manual))
+        # The remote snapshot may replace objects at an equal revision. Prevent
+        # editing that snapshot until the brief network operation is complete.
+        self.tabs.setEnabled(False)
+        self.update_sync_status()
+        self.sync_worker.start()
+
+    def finish_sync(self, manual=False):
+        worker = self.sync_worker
+        self.sync_worker = None
+        self.tabs.setEnabled(True)
+        # Avoid interrupting train journeys with frequent unreachable requests.
+        self.sync_timer.setInterval(30000 if getattr(self.store, "online", True) else 120000)
+        self.update_sync_status()
+        # poll deliberately preserves unsaved estimate and settings fields.
+        self.poll()
+        if worker.backup_path:
+            self.statusBar().showMessage(f"Versions conservées. Sauvegarde locale : {worker.backup_path}", 15000)
+        if worker.error and getattr(worker.error, "code", None) != "SYNC_CONFLICT":
+            if manual and not self.close_after_sync:
+                self.error(worker.error)
+            else:
+                self.sync_status.setText(f"Synchronisation interrompue : {worker.error}")
+        worker.deleteLater()
+        if self.close_after_sync:
+            self.close()
+
+    def resolve_sync_conflict(self):
+        if self.dirty or self.settings_dirty:
+            QMessageBox.information(self, "Modifications non enregistrées", "Enregistrez vos modifications avant de conserver les deux versions.")
+            return
+        answer = QMessageBox.question(
+            self, "Conserver les deux versions",
+            "Les affaires et gabarits modifiés sur ce PC seront conservés en copies. "
+            "Les paramètres du serveur seront repris ; une sauvegarde locale complète sera conservée.\n\nContinuer ?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes:
+            self.start_sync(manual=True, resolve=True)
 
     def build_estimates(self):
         page = QWidget()
@@ -776,7 +879,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(form)
         button("Enregistrer les paramètres", self.save_settings, layout)
         button("Créer une sauvegarde des données", self.backup, layout)
-        connection_label = QLabel("Connexion actuelle : serveur partagé" if isinstance(self.store, RemoteStore) else "Connexion actuelle : cet ordinateur")
+        connection_label = QLabel("Connexion actuelle : serveur avec copie hors ligne sur ce PC" if self.sync_enabled else "Connexion actuelle : serveur partagé" if isinstance(self.store, RemoteStore) else "Connexion actuelle : cet ordinateur")
         layout.addWidget(connection_label)
         button("Configurer la connexion…", self.configure_connection, layout)
         limits = QLabel("Premier jet : exports JSON, sans PDF, encaissements, TVA par poste ni détail des différents prélèvements.")
@@ -1295,12 +1398,13 @@ class MainWindow(QMainWindow):
             self.error(exc)
 
     def poll(self):
+        self.update_sync_status()
         if QApplication.activeModalWidget():
             return
         try:
             if self.current:
                 latest = self.store.get_estimate(self.current["id"])
-                if latest["revision"] != self.current["revision"]:
+                if latest["revision"] != self.current["revision"] or (not self.dirty and latest != self.current):
                     if self.dirty:
                         self.statusBar().showMessage("L’affaire a changé ailleurs. Vos modifications sont conservées ; l’enregistrement vérifiera le conflit.")
                     else:
@@ -1333,6 +1437,17 @@ class MainWindow(QMainWindow):
             elif box.clickedButton() != discard:
                 event.ignore()
                 return
+        if self.sync_worker is not None:
+            self.close_after_sync = True
+            self.sync_timer.stop()
+            self.setEnabled(False)
+            self.statusBar().showMessage("Fin de la synchronisation avant fermeture…")
+            event.ignore()
+            return
+        self.timer.stop()
+        if self.sync_enabled:
+            self.sync_timer.stop()
+        self.closing = True
         event.accept()
 
 

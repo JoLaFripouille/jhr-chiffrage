@@ -38,9 +38,11 @@ Le dépôt et les archives ne contiennent ni affaires, ni sauvegardes, ni captur
 
 GitHub met à jour le logiciel, pas les affaires. En mode local, utiliser **Paramètres → Créer une sauvegarde des données** pour transporter une copie séparément. Ne pas synchroniser une base ouverte via OneDrive.
 
-## Serveur partagé (version 0.2)
+## Serveur partagé et travail hors ligne (version 0.3)
 
-Un PC peut conserver la base commune pour les applications Windows/Ubuntu et leur agent IA. Dans **Paramètres → Configurer la connexion**, choisir le serveur, l'adresse HTTPS, la clé d'accès et le certificat public. Tester puis relancer. Le serveur doit être disponible ; aucun basculement local silencieux n'est effectué en cas de coupure.
+Un PC peut conserver la base commune pour les applications Windows/Ubuntu et leur agent IA. Dans **Paramètres → Configurer la connexion**, choisir le serveur, l'adresse HTTPS, la clé d'accès et le certificat public. Tester puis relancer. La première connexion prépare une copie locale des affaires et gabarits. Ensuite, le logiciel permet de chiffrer et d'enregistrer sans réseau, même après redémarrage.
+
+Avant de partir, cliquer sur **Synchroniser** et vérifier **À jour**. Au retour sur le réseau du serveur, les modifications enregistrées se synchronisent automatiquement ou via ce bouton. Les changements concurrents sont signalés : **Conserver les deux versions** garde des copies au lieu d'écraser une affaire. Le serveur et les clients doivent être en version 0.3.0 ou ultérieure. Le mode hors ligne n'ajoute pas d'accès distant : dans le train, les changements restent sur le PC jusqu'à ce que le serveur soit accessible.
 
 [Installer et utiliser le serveur](SERVEUR.md). Les certificats privés, clés d'accès et configurations personnelles restent hors du dépôt. Cette première version utilise une clé partagée, sans comptes individuels, et vise le réseau local.
 

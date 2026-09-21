@@ -45,6 +45,8 @@ def build_app(store: Store, token: str) -> Starlette:
     # Deliberately explicit: new Store methods never become remotely callable by accident.
     methods = {
         "get_settings": store.get_settings,
+        "sync_snapshot": store.sync_snapshot,
+        "sync_push": store.sync_push,
         "save_settings": store.save_settings,
         "list_estimates": store.list_estimates,
         "get_estimate": store.get_estimate,
@@ -68,7 +70,7 @@ def build_app(store: Store, token: str) -> Starlette:
     async def health(request):
         if not authorized(request):
             return error("UNAUTHORIZED", "Connexion non autorisée.", 401)
-        return JSONResponse({"result": {"version": __version__, "api_version": 1}})
+        return JSONResponse({"result": {"version": __version__, "api_version": 1, "offline_sync_version": 1}})
 
     async def call(request: Request):
         if not authorized(request):
@@ -101,7 +103,7 @@ def build_app(store: Store, token: str) -> Starlette:
             result = await run_in_threadpool(function, **params)
             return JSONResponse({"result": result})
         except DomainError as exc:
-            status = {"REVISION_CONFLICT": 409, "IDEMPOTENCY_CONFLICT": 409,
+            status = {"REVISION_CONFLICT": 409, "IDEMPOTENCY_CONFLICT": 409, "SYNC_CONFLICT": 409,
                       "DATABASE_BUSY": 503, "NOT_FOUND": 404}.get(exc.code, 400)
             return error(exc.code, str(exc), status)
         except (TypeError, ValueError, KeyError, AttributeError, RecursionError):

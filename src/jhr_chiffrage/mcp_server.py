@@ -129,6 +129,14 @@ def build_server(store: Store | None = None, access: str | None = None) -> FastM
         return database.get_settings()
 
     @tool
+    def get_sync_status() -> dict:
+        """Check if saved changes are still local, pending synchronization."""
+        return {"server_mode": hasattr(database, "synchronize"),
+                "status": getattr(database, "status_text", "Base locale"),
+                "pending": getattr(database, "pending_count", 0),
+                "conflict": getattr(database, "has_conflict", False)}
+
+    @tool
     def list_estimates() -> list[dict]:
         """List estimates with their current revisions and statuses."""
         return database.list_estimates()
@@ -190,6 +198,13 @@ def build_server(store: Store | None = None, access: str | None = None) -> FastM
         return result
 
     if profile in {"draft", "full"}:
+        @tool
+        def synchronize() -> dict:
+            """Send previously authorized saved changes and fetch the server copy. Conflicts never overwrite data."""
+            if hasattr(database, "synchronize"):
+                database.synchronize()
+            return get_sync_status()
+
         @tool
         def create_estimate(name: str, operation_id: OperationId, client: str = "", reference: str = "") -> dict:
             """Create a draft. New objects do not yet have an expected revision."""

@@ -10,7 +10,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from platformdirs import user_data_path
 
@@ -315,6 +315,111 @@ class Store:
     def get_settings(self):
         with self.connection() as db:
             return self._get(db, "settings", "default")
+
+    def sync_snapshot(self):
+        """One consistent read, including all object types needed while offline."""
+        with self.connection() as db:
+            db.execute("BEGIN")
+            objects = [{"kind": row[0], "id": row[1], "body": json.loads(row[2])}
+                       for row in db.execute("SELECT kind,id,body FROM objects ORDER BY kind,id")]
+        return {"offline_sync_version": 1, "objects": objects}
+
+    def sync_push(self, changes, actor="ui", operation_id=None):
+        """Compare-and-swap an offline batch; never partially merge conflicting data."""
+        changes = deepcopy(changes)
+        if not isinstance(changes, list) or len(changes) > 10000:
+            fail("Lot de synchronisation invalide.")
+
+        def push(db):
+            current = {(r[0], r[1]): json.loads(r[2]) for r in db.execute("SELECT kind,id,body FROM objects")}
+            pending = {}
+            for change in changes:
+                if not isinstance(change, dict) or set(change) != {"kind", "id", "base", "body"}:
+                    fail("Objet de synchronisation invalide.")
+                kind, ident, base, body = (change[k] for k in ("kind", "id", "base", "body"))
+                if kind not in ("settings", "template", "estimate") or not isinstance(ident, str):
+                    fail("Type ou identifiant de synchronisation invalide.")
+                key = (kind, ident)
+                if key in pending or not isinstance(body, dict) or (base is not None and not isinstance(base, dict)):
+                    fail("Objet dupliqué ou contenu de synchronisation invalide.")
+                if encode(current.get(key)) != encode(base):
+                    fail("Des données ont changé sur le serveur. Vos modifications restent conservées sur ce PC.", "SYNC_CONFLICT")
+                if kind == "settings":
+                    if ident != "default" or base is None:
+                        fail("Identifiant des paramètres invalide.")
+                else:
+                    try:
+                        if str(UUID(ident)) != ident:
+                            raise ValueError()
+                    except ValueError:
+                        fail("Identifiant de synchronisation invalide.")
+                    if body.get("id") != ident:
+                        fail("Identifiant du contenu incohérent.")
+                revision = body.get("revision")
+                if type(revision) is not int or not 1 <= revision <= 2147483647 or (base and revision <= base["revision"]):
+                    fail("Révision de synchronisation invalide.")
+                pending[key] = body
+
+            combined = {**current, **pending}
+            for (kind, ident), body in pending.items():
+                base = current.get((kind, ident))
+                try:
+                    self._validate_sync_body(kind, body, base, combined)
+                except (TypeError, KeyError, AttributeError, ValueError, RecursionError):
+                    fail("Contenu de synchronisation invalide.")
+            for (kind, ident), body in pending.items():
+                self._put(db, kind, ident, body)
+            return changes, {"applied": len(pending)}
+
+        return self._mutation("sync_push", changes, actor, operation_id, push)
+
+    def _validate_sync_body(self, kind, body, base, combined):
+        if kind == "settings":
+            if set(body) != set(DEFAULT_SETTINGS):
+                fail("Champs des paramètres invalides.")
+            checked_settings(body)
+            return
+        if kind == "template":
+            if set(body) != {"id", "revision", "name", "description", "items"}:
+                fail("Champs du gabarit invalides.")
+            if not isinstance(body["name"], str) or not body["name"].strip() or not isinstance(body["description"], str):
+                fail("Nom ou description du gabarit invalide.")
+            calculate({"settings": DEFAULT_SETTINGS, "works": [{"id": "template-validation", "name": body["name"], "items": body["items"]}]})
+            return
+        required = {"id", "revision", "version", "parent_id", "status", "name", "client", "reference", "settings", "works", "commercial_title", "commercial_description", "updated_at"}
+        optional = {"root_id", "frozen_at", "frozen_totals", "calculation_version"}
+        if not required <= set(body) or set(body) - required - optional:
+            fail("Champs de l'affaire invalides.")
+        if base and base["status"] == "frozen":
+            fail("Cette version est figée. Créez une révision.", "LOCKED_VERSION")
+        for field in ("name", "client", "reference", "commercial_title", "commercial_description", "updated_at"):
+            if not isinstance(body[field], str):
+                fail("Texte de l'affaire invalide.")
+        if not body["name"].strip() or body["status"] not in ("draft", "frozen"):
+            fail("Nom ou état de l'affaire invalide.")
+        datetime.fromisoformat(body["updated_at"])
+        if type(body["version"]) is not int or body["version"] < 1:
+            fail("Version de l'affaire invalide.")
+        if base and any(body.get(k) != base.get(k) for k in ("version", "parent_id", "root_id")):
+            fail("La filiation d'une affaire ne peut pas être modifiée.")
+        if body["parent_id"] is None:
+            if body["version"] != 1 or "root_id" in body:
+                fail("Filiation d'affaire invalide.")
+        else:
+            parent = combined.get(("estimate", body["parent_id"]))
+            if not parent or parent["status"] != "frozen" or body.get("root_id") != parent.get("root_id", parent["id"]) or body["version"] <= parent["version"]:
+                fail("La révision doit provenir d'une version figée.")
+            for (other_kind, other_id), other in combined.items():
+                if other_kind == "estimate" and other_id != body["id"] and other.get("root_id", other_id) == body["root_id"] and other["version"] == body["version"]:
+                    fail("Une autre révision a été créée sur le serveur. Vos modifications restent conservées sur ce PC.", "SYNC_CONFLICT")
+        checked_settings(body["settings"], allow_missing=True)
+        totals = calculate(body)
+        if body["status"] == "frozen":
+            if totals["incomplete"] or body.get("frozen_totals") != totals or body.get("calculation_version") != 1 or body["revision"] < 2:
+                fail("Le chiffrage figé est incomplet ou ses totaux sont incohérents.")
+            datetime.fromisoformat(body["frozen_at"])
+        elif any(k in body for k in ("frozen_at", "frozen_totals", "calculation_version")):
+            fail("Un brouillon ne peut pas contenir des totaux figés.")
 
     def save_settings(self, data, expected_revision, actor="ui", operation_id=None):
         data = deepcopy(data)

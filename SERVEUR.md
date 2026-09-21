@@ -21,7 +21,13 @@ Dans **Paramètres → Configurer la connexion**, sélectionner **Serveur partag
 
 L'application et le MCP local utilisent la même configuration de connexion. Pour un processus spécifique, `JHR_SERVER_URL`, `JHR_SERVER_TOKEN` et `JHR_SERVER_CA` définissent un profil serveur indépendant. `JHR_CHIFFRAGE_DB` force une base locale si aucun profil serveur n'est défini dans l'environnement.
 
-En cas de coupure, il n'y a pas de repli silencieux sur une autre base. Les saisies restent dans l'application. Si un enregistrement a été interrompu, recharger pour vérifier s'il a été reçu avant de le refaire. Les conflits de révision empêchent d'écraser les changements d'un autre client.
+Depuis la version 0.3.0, le mode serveur prépare une copie de travail locale lors de la première connexion. Mettre à jour le serveur et les clients. Avant de partir, ouvrir l'application sur le réseau du serveur, cliquer sur **Synchroniser** et vérifier qu'aucun élément n'est en attente. Les affaires, ouvrages, sous-postes, gabarits et paramètres sont alors disponibles sans réseau, y compris après fermeture et redémarrage de l'application.
+
+Dans le train, utiliser **Enregistrer** normalement : les modifications sont enregistrées sur le disque du PC. Le statut **Hors ligne** indique les éléments en attente. La synchronisation est tentée au lancement, périodiquement et via **Synchroniser** ; les formulaires doivent être enregistrés avant cet échange. Le retour d'Internet seul ne suffit pas : le serveur doit être accessible, actuellement sur son réseau local. Aucun accès Internet distant n'est ajouté par le mode hors ligne.
+
+Si le même élément a changé sur les deux PC, le lot reste sur le PC et un conflit est affiché. **Conserver les deux versions** garde les affaires et gabarits du serveur ainsi que des copies des modifications locales, avec la mention « copie hors ligne ». Ces copies d'affaires sont des brouillons indépendants. Les paramètres généraux du serveur sont repris ; les paramètres précédents restent dans les affaires locales copiées et dans une sauvegarde complète créée avant résolution. Rien n'est écrasé automatiquement. Une réponse perdue après un enregistrement serveur est rejouée avec le même identifiant pour éviter les doublons.
+
+La copie est dans le dossier personnel `.jhr-chiffrage/offline`, séparée pour chaque adresse/jeton de serveur ; ne pas la supprimer avant synchronisation. Une modification d'adresse ou de jeton crée un autre profil : synchroniser les modifications avant ce changement. Le mode **Cet ordinateur** conserve sa base indépendante et ne la fusionne pas avec le serveur. Le MCP partage la copie du profil et expose `get_sync_status` et, pour les profils autorisés en écriture, `synchronize`.
 
 ## Réseau et disponibilité
 
