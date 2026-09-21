@@ -57,7 +57,16 @@ ou préparer d'abord une version Ubuntu/Python compatible.
 
 Le module `venv` doit être disponible. Sur Ubuntu 24.04, le paquet système concerné
 est généralement `python3-venv`. Les dépendances Qt courantes comprennent
-`libxcb-cursor0`, `libxkbcommon-x11-0`, `libegl1` et `libgl1`.
+`libxcb-cursor0`, `libxkbcommon-x11-0`, `libegl1`, `libgl1`,
+`libxcb-icccm4`, `libxcb-keysyms1` et `libxcb-shape0`.
+
+Sur Ubuntu 24.04, si ces prérequis manquent, leur installation manuelle est :
+
+```sh
+sudo apt update
+sudo apt install git python3-venv libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0
+```
+
 Si elles manquent, l'installateur affiche les bibliothèques concernées et s'arrête.
 Faites installer les paquets manquants via le gestionnaire de paquets Ubuntu,
 puis relancez `bash installer.sh`. Leur installation n'est jamais automatique.

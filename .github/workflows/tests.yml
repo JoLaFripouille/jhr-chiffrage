@@ -17,7 +17,7 @@ jobs:
           python-version: '3.12'
       - name: Bibliothèques graphiques Ubuntu
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0
       - run: python -m pip install ".[test]"
       - run: python -m pytest -q
       - run: python scripts/build_linux_bundle.py
