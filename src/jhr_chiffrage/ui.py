@@ -8,13 +8,14 @@ from pathlib import Path
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from PySide6.QtCore import Qt, QTimer, QThread, QPointF, Signal
-from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPainter, QPen, QColor, QIcon, QPixmap
+from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPainter, QPen, QColor, QIcon, QPixmap, QPalette
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSplitter, QTabWidget,
     QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QTabBar,
-    QFrame, QSizePolicy, QHeaderView, QToolButton, QMenu, QSpinBox, QAbstractSpinBox,
+    QFrame, QSizePolicy, QHeaderView, QToolButton, QMenu, QSpinBox, QAbstractSpinBox, QTreeWidgetItemIterator,
+    QStyledItemDelegate, QStyleOptionViewItem, QStyle,
 )
 from . import __version__
 from .core import Store, calculate, DomainError, clone_items
@@ -33,7 +34,7 @@ def branch_icon():
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
-    painter.setPen(QPen(QColor("#2764a5"), 1.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    painter.setPen(QPen(QColor("#a17b2d"), 1.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
     painter.drawPolyline([QPointF(3, 2), QPointF(3, 10), QPointF(13, 10)])
     painter.drawPolyline([QPointF(10, 7), QPointF(13, 10), QPointF(10, 13)])
     painter.end()
@@ -49,12 +50,35 @@ def descendant_ids(items, item_id):
         result.update(more)
 
 
+class SubpostDelegate(QStyledItemDelegate):
+    """Paint pastel subposts independently of platform stylesheet backgrounds."""
+    def paint(self, painter, option, index):
+        if not index.parent().isValid():
+            return super().paint(painter, option, index)
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        background = QColor('#fff5cc')
+        selected = QColor('#f3dfa0')
+        opt.palette.setColor(QPalette.Base, background)
+        opt.palette.setColor(QPalette.AlternateBase, background)
+        opt.palette.setColor(QPalette.Highlight, selected)
+        opt.palette.setColor(QPalette.HighlightedText, QColor('#614919'))
+        painter.save()
+        painter.fillRect(option.rect, selected if opt.state & QStyle.State_Selected else background)
+        opt.rect = opt.rect.adjusted(7, 0, -7, 0)
+        QApplication.style().drawControl(QStyle.CE_ItemViewItem, opt, painter)
+        painter.setPen(QColor('#ede4c4'))
+        painter.drawLine(option.rect.bottomLeft(), option.rect.bottomRight())
+        painter.restore()
+
+
 class PostTree(QTreeWidget):
     addChildRequested = Signal(str)
 
     def __init__(self):
         super().__init__()
         self.editable = False
+        self.setItemDelegate(SubpostDelegate(self))
         self.hover_id = None
         self.setMouseTracking(True)
         self.child_button = QPushButton("+ Sous-poste", self.viewport())
@@ -66,6 +90,11 @@ class PostTree(QTreeWidget):
         self.header().sectionResized.connect(self.hide_action)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.context_menu)
+
+    def drawBranches(self, painter, rect, index):
+        if index.parent().isValid():
+            painter.fillRect(rect, QColor('#fff5cc'))
+        super().drawBranches(painter, rect, index)
 
     def hide_action(self, *_):
         self.child_button.hide()
@@ -83,8 +112,8 @@ class PostTree(QTreeWidget):
             return
         rect = self.visualItemRect(item)
         self.hover_id = item.data(0, Qt.UserRole)
-        self.child_button.setGeometry(self.columnViewportPosition(6) + 3, rect.y() + 3,
-                                      self.columnWidth(6) - 6, max(24, rect.height() - 6))
+        self.child_button.setGeometry(self.columnViewportPosition(6) + 3, rect.y() + 2,
+                                      self.columnWidth(6) - 6, max(20, rect.height() - 4))
         self.child_button.show()
         self.child_button.raise_()
 
@@ -185,15 +214,9 @@ class SummaryPanel(QWidget):
         self._text = ""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(9)
-        heading = QHBoxLayout()
-        heading.addWidget(label("SYNTHÈSE DE L’AFFAIRE", "eyebrow"))
-        self.hours = label("", "subtle")
-        heading.addStretch()
-        heading.addWidget(self.hours)
-        layout.addLayout(heading)
+        layout.setSpacing(5)
         row = QHBoxLayout()
-        row.setSpacing(10)
+        row.setSpacing(8)
         self.values = {}
         for title, key, kind in [
             ("Total HT", "ht_cents", "metricPrimary"),
@@ -204,9 +227,12 @@ class SummaryPanel(QWidget):
         ]:
             card = QFrame()
             card.setObjectName(kind)
-            body = QVBoxLayout(card)
-            body.setContentsMargins(14, 7, 14, 7)
-            body.addWidget(label(title, "metricCaption"))
+            body = QHBoxLayout(card)
+            body.setContentsMargins(10, 6, 10, 6)
+            body.setSpacing(6)
+            caption = label(title, "metricCaption")
+            caption.setWordWrap(True)
+            body.addWidget(caption, 1)
             value = label("—", "metricValue")
             body.addWidget(value)
             self.values[key] = value
@@ -214,7 +240,11 @@ class SummaryPanel(QWidget):
         layout.addLayout(row)
         self.note = label("", "summaryNote")
         self.note.setWordWrap(True)
-        layout.addWidget(self.note)
+        details = QHBoxLayout()
+        details.addWidget(self.note, 1)
+        self.hours = label("", "subtle")
+        details.addWidget(self.hours)
+        layout.addLayout(details)
         self.warning = label("", "warning")
         self.warning.setWordWrap(True)
         self.warning.hide()
@@ -516,7 +546,8 @@ class SyncWorker(QThread):
         try:
             if self.resolve:
                 self.backup_path = self.store.resolve_conflict_keep_both()
-            self.store.synchronize()
+            synchronize = getattr(self.store, "synchronize_deferred", self.store.synchronize)
+            synchronize()
         except Exception as exc:
             self.error = exc
 
@@ -534,6 +565,8 @@ class MainWindow(QMainWindow):
         self.settings_dirty = False
         self.loading = False
         self.active_work_id = None
+        self._tree_states = {}
+        self._rendered_tree_key = None
         self.setWindowTitle("JHR Chiffrage")
         self.setWindowIcon(QIcon(str(Path(__file__).parent / "assets/chiffrage.png")))
         self.resize(1360, 900)
@@ -578,7 +611,8 @@ class MainWindow(QMainWindow):
         self.timer.start()
         if self.sync_enabled:
             self.sync_status = QLabel()
-            self.sync_status.setWordWrap(True)
+            self.sync_status.setWordWrap(False)
+            self.sync_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             self.sync_status.setToolTip("Les modifications enregistrées sont conservées sur ce PC puis synchronisées lorsque le serveur est accessible.")
             self.statusBar().addPermanentWidget(self.sync_status, 1)
             self.resolve_button = QPushButton("Conserver les deux versions")
@@ -628,16 +662,18 @@ class MainWindow(QMainWindow):
             return
         self.sync_worker = SyncWorker(self.store, resolve=resolve, parent=self)
         self.sync_worker.finished.connect(lambda: self.finish_sync(manual))
-        # The remote snapshot may replace objects at an equal revision. Prevent
-        # editing that snapshot until the brief network operation is complete.
-        self.tabs.setEnabled(False)
+        # Only explicit conflict resolution replaces local working objects in
+        # the worker. Normal background sync leaves all editing controls usable.
+        if resolve:
+            self.tabs.setEnabled(False)
         self.update_sync_status()
         self.sync_worker.start()
 
     def finish_sync(self, manual=False):
         worker = self.sync_worker
         self.sync_worker = None
-        self.tabs.setEnabled(True)
+        if worker.resolve:
+            self.tabs.setEnabled(True)
         # Avoid interrupting train journeys with frequent unreachable requests.
         self.sync_timer.setInterval(30000 if getattr(self.store, "online", True) else 120000)
         self.update_sync_status()
@@ -670,7 +706,7 @@ class MainWindow(QMainWindow):
     def build_estimates(self):
         page = QWidget()
         layout = QHBoxLayout(page)
-        layout.setContentsMargins(18, 12, 18, 14)
+        layout.setContentsMargins(18, 8, 18, 8)
         layout.setSpacing(18)
         left = QWidget()
         left.setObjectName("sidebar")
@@ -691,10 +727,11 @@ class MainWindow(QMainWindow):
         right = QWidget()
         content = QVBoxLayout(right)
         content.setContentsMargins(0, 0, 0, 0)
-        content.setSpacing(8)
+        content.setSpacing(6)
         heading = QHBoxLayout()
-        heading.addWidget(label("Chiffrage de l’affaire", "pageTitle"))
-        heading.addStretch()
+        self.state_label = label("Sélectionnez ou créez une affaire.", "state")
+        self.state_label.setWordWrap(True)
+        heading.addWidget(self.state_label, 1)
         self.save_button = button("Enregistrer", self.save_current, heading)
         self.save_button.setProperty("role", "primary")
         self.export_button = QToolButton()
@@ -706,9 +743,6 @@ class MainWindow(QMainWindow):
         self.export_button.setMenu(menu)
         heading.addWidget(self.export_button)
         content.addLayout(heading)
-        self.state_label = label("Sélectionnez ou créez une affaire.", "state")
-        self.state_label.setWordWrap(True)
-        content.addWidget(self.state_label)
         self.empty_panel = QWidget()
         empty = QVBoxLayout(self.empty_panel)
         empty.addStretch()
@@ -738,7 +772,7 @@ class MainWindow(QMainWindow):
             self.metadata[key] = field
         self.metadata["name"].setObjectName("estimateName")
         self.metadata["name"].setPlaceholderText("Nom de l’affaire")
-        edit_layout.addWidget(self.metadata["name"])
+        heading.insertWidget(0, self.metadata["name"], 1)
         identity = QHBoxLayout()
         identity.addWidget(label("Client", "subtle"))
         self.metadata["client"].setPlaceholderText("Nom du client")
@@ -784,20 +818,17 @@ class MainWindow(QMainWindow):
         self.add_work_button.setStyleSheet("QPushButton { border: none; border-radius: 16px; background: transparent; font-size: 23px; padding: 0; } QPushButton:hover { background: #dce6f4; }")
         self.add_work_button.setToolTip("Nouvel ouvrage (Ctrl+T)")
         work_tabs_row.addStretch(1)
+        post_button = button("+  Poste", self.add_item, work_tabs_row)
+        post_button.setProperty("role", "primary")
+        template_button = button("Depuis un gabarit", self.apply_template, work_tabs_row)
         browser.addLayout(work_tabs_row)
         work_panel = QFrame()
         work_panel.setObjectName("workPanel")
         panel = QVBoxLayout(work_panel)
-        panel.setContentsMargins(14, 8, 14, 6)
-        panel.setSpacing(6)
-        toolbar = QHBoxLayout()
+        panel.setContentsMargins(14, 6, 14, 4)
+        panel.setSpacing(4)
         self.work_summary = label("Ajoutez un ouvrage avec le bouton +.", "workSummary")
         self.work_summary.setWordWrap(True)
-        toolbar.addWidget(self.work_summary, 1)
-        post_button = button("+  Poste", self.add_item, toolbar)
-        post_button.setProperty("role", "primary")
-        template_button = button("Depuis un gabarit", self.apply_template, toolbar)
-        panel.addLayout(toolbar)
         self.tree = PostTree()
         self.tree.setRootIsDecorated(True)
         self.tree.setIndentation(38)
@@ -823,7 +854,7 @@ class MainWindow(QMainWindow):
         edit_button.setProperty("role", "quiet")
         remove_button = button("Retirer le poste", self.remove_selected, row)
         remove_button.setProperty("role", "quiet")
-        row.addStretch()
+        row.addWidget(self.work_summary, 1)
         remove_work = button("Retirer cet ouvrage", self.remove_work, row)
         remove_work.setProperty("role", "danger")
         self.work_actions = [post_button, template_button, edit_button, remove_button, remove_work]
@@ -910,8 +941,15 @@ class MainWindow(QMainWindow):
                   "save_estimate": "Affaire enregistrée", "freeze_estimate": "Version figée",
                   "revise_estimate": "Nouvelle version créée", "refresh_estimate_settings": "Paramètres appliqués au brouillon",
                   "save_template": "Gabarit enregistré", "apply_template": "Gabarit ajouté à une affaire"}
+        events = self.store.list_changes()
+        signature = [(e.get('seq'), e.get('at'), e.get('actor'), e.get('operation')) for e in events]
+        if signature == getattr(self, '_history_signature', None):
+            return
+        self._history_signature = signature
+        scroll = self.history.verticalScrollBar().value()
+        self.history.setUpdatesEnabled(False)
         self.history.clear()
-        for event in self.store.list_changes():
+        for event in events:
             timestamp = event.get("at", "")
             try:
                 timestamp = datetime.fromisoformat(timestamp).astimezone().strftime("%d/%m/%Y %H:%M:%S")
@@ -919,6 +957,8 @@ class MainWindow(QMainWindow):
                 pass
             self.history.addTopLevelItem(QTreeWidgetItem([
                 timestamp, event.get("actor", ""), labels.get(event.get("operation"), event.get("operation", ""))]))
+        self.history.verticalScrollBar().setValue(scroll)
+        self.history.setUpdatesEnabled(True)
 
     def settings_changed(self, *_):
         self.settings_dirty = True
@@ -948,18 +988,30 @@ class MainWindow(QMainWindow):
         estimates = self.store.list_estimates()
         templates = self.store.list_templates()
         selected = self.current["id"] if self.current else None
-        self.estimates.blockSignals(True)
-        self.estimates.clear()
-        for estimate in estimates:
-            frozen = " • Figée" if estimate["status"] == "frozen" else ""
-            item = QListWidgetItem(f"{estimate.get('reference') or 'Sans référence'} — {estimate['name']}{frozen}")
-            item.setData(Qt.UserRole, estimate["id"])
-            self.estimates.addItem(item)
-            if estimate["id"] == selected:
-                self.estimates.setCurrentItem(item)
-        self.estimates.blockSignals(False)
+        signature = [(e['id'], e.get('reference'), e['name'], e['status']) for e in estimates]
+        if signature != getattr(self, '_estimates_signature', None):
+            self._estimates_signature = signature
+            scroll = self.estimates.verticalScrollBar().value()
+            self.estimates.setUpdatesEnabled(False)
+            self.estimates.blockSignals(True)
+            self.estimates.clear()
+            for estimate in estimates:
+                frozen = " • Figée" if estimate["status"] == "frozen" else ""
+                item = QListWidgetItem(f"{estimate.get('reference') or 'Sans référence'} — {estimate['name']}{frozen}")
+                item.setData(Qt.UserRole, estimate["id"])
+                self.estimates.addItem(item)
+                if estimate["id"] == selected:
+                    self.estimates.setCurrentItem(item)
+            self.estimates.blockSignals(False)
+            self.estimates.verticalScrollBar().setValue(scroll)
+            self.estimates.setUpdatesEnabled(True)
+        if templates == getattr(self, '_templates_snapshot', None):
+            return
+        self._templates_snapshot = copy.deepcopy(templates)
         selected_template = self.templates.currentItem()
         template_id = selected_template.data(Qt.UserRole)["id"] if selected_template else None
+        scroll = self.templates.verticalScrollBar().value()
+        self.templates.setUpdatesEnabled(False)
         self.templates.clear()
         for template in templates:
             item = QListWidgetItem(f"{template['name']} — {len(template['items'])} poste(s)")
@@ -967,6 +1019,8 @@ class MainWindow(QMainWindow):
             self.templates.addItem(item)
             if template["id"] == template_id:
                 self.templates.setCurrentItem(item)
+        self.templates.verticalScrollBar().setValue(scroll)
+        self.templates.setUpdatesEnabled(True)
 
     def confirm_pending(self):
         if not self.dirty:
@@ -1048,8 +1102,11 @@ class MainWindow(QMainWindow):
         self.revise_button.setEnabled(bool(self.current and self.current["status"] == "frozen"))
         self.rates_button.setEnabled(editable)
         for key, field in self.metadata.items():
-            field.setText(str(self.current.get(key) or "") if self.current else "")
-            field.setCursorPosition(0)
+            text = str(self.current.get(key) or "") if self.current else ""
+            if field.text() != text:
+                position = field.cursorPosition() if field.hasFocus() else 0
+                field.setText(text)
+                field.setCursorPosition(min(position, len(text)))
         self.render_tree()
         self.update_totals()
         self.loading = False
@@ -1058,21 +1115,44 @@ class MainWindow(QMainWindow):
         works = (self.current or {}).get("works", [])
         selected = self.tree.currentItem()
         selected_id = selected.data(0, Qt.UserRole) if selected else None
+        known, collapsed = set(), set()
+        iterator = QTreeWidgetItemIterator(self.tree)
+        while iterator.value():
+            node = iterator.value()
+            ident = node.data(0, Qt.UserRole)
+            known.add(ident)
+            if node.childCount() and not node.isExpanded():
+                collapsed.add(ident)
+            iterator += 1
+        if self._rendered_tree_key is not None:
+            self._tree_states[self._rendered_tree_key] = {
+                'selected': selected_id, 'known': known, 'collapsed': collapsed,
+                'vertical': self.tree.verticalScrollBar().value(),
+                'horizontal': self.tree.horizontalScrollBar().value(),
+            }
         active_ids = [work["id"] for work in works]
         if self.active_work_id not in active_ids:
             self.active_work_id = active_ids[0] if active_ids else None
+        key = ((self.current or {}).get('id'), self.active_work_id)
+        state = self._tree_states.get(key, {})
+        selected_id = state.get('selected')
+        self._rendered_tree_key = key
         if rebuild_tabs:
             self.work_tabs.blockSignals(True)
-            while self.work_tabs.count():
-                self.work_tabs.removeTab(0)
-            for work in works:
-                index = self.work_tabs.addTab(work["name"])
-                self.work_tabs.setTabData(index, work["id"])
-                self.work_tabs.setTabToolTip(index, work["name"] + " — double-clic pour renommer")
+            tab_signature = [(w['id'], w['name']) for w in works]
+            existing = [(self.work_tabs.tabData(i), self.work_tabs.tabText(i)) for i in range(self.work_tabs.count())]
+            if tab_signature != existing:
+                while self.work_tabs.count():
+                    self.work_tabs.removeTab(0)
+                for work in works:
+                    index = self.work_tabs.addTab(work["name"])
+                    self.work_tabs.setTabData(index, work["id"])
+                    self.work_tabs.setTabToolTip(index, work["name"] + " — double-clic pour renommer")
             if self.active_work_id:
                 self.work_tabs.setCurrentIndex(active_ids.index(self.active_work_id))
             self.work_tabs.blockSignals(False)
         self.tree.hide_action()
+        self.tree.setUpdatesEnabled(False)
         self.tree.clear()
         try:
             calculated = calculate(self.current) if self.current else {"lines": [], "works": []}
@@ -1102,7 +1182,9 @@ class MainWindow(QMainWindow):
                 if parent is not None:
                     parent.addChild(child)
                     child.setIcon(0, branch_icon())
-                    child.setForeground(0, QColor("#2764a5"))
+                    for column in range(self.tree.columnCount()):
+                        child.setBackground(column, QColor("#fff5cc"))
+                        child.setForeground(column, QColor("#72551c"))
                     heading_font = parent.font(0)
                     heading_font.setBold(True)
                     parent.setFont(0, heading_font)
@@ -1113,7 +1195,12 @@ class MainWindow(QMainWindow):
                     child.setFont(0, heading_font)
                 if item["id"] == selected_id:
                     self.tree.setCurrentItem(child)
-            self.tree.expandAll()
+            for ident, node in nodes.items():
+                node.setExpanded(ident not in state.get('collapsed', set()))
+        self.tree.doItemsLayout()
+        self.tree.verticalScrollBar().setValue(state.get('vertical', 0))
+        self.tree.horizontalScrollBar().setValue(state.get('horizontal', 0))
+        self.tree.setUpdatesEnabled(True)
         editable = bool(self.current and self.current["status"] == "draft")
         self.tree.editable = editable
         for action in self.work_actions:
@@ -1405,9 +1492,13 @@ class MainWindow(QMainWindow):
 
     def poll(self):
         self.update_sync_status()
-        if QApplication.activeModalWidget():
+        if QApplication.activeModalWidget() or self.sync_worker is not None:
             return
         try:
+            if not self.dirty and not self.settings_dirty:
+                apply_snapshot = getattr(self.store, 'apply_pending_snapshot', None)
+                if apply_snapshot:
+                    apply_snapshot()
             if self.current:
                 latest = self.store.get_estimate(self.current["id"])
                 if latest["revision"] != self.current["revision"] or (not self.dirty and latest != self.current):
@@ -1418,7 +1509,7 @@ class MainWindow(QMainWindow):
                         self.render()
             if not self.settings_dirty:
                 latest_settings = self.store.get_settings()
-                if latest_settings["revision"] != self.settings["revision"]:
+                if latest_settings != self.settings:
                     self.load_settings()
             self.refresh_lists()
         except (DomainError, OSError) as exc:

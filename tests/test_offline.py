@@ -215,3 +215,124 @@ def test_cache_profiles_cannot_borrow_another_servers_affairs(setup, field, valu
     assert exc.value.code == "OFFLINE_NOT_READY"
     assert working(remote, cache).list_estimates()[0]["name"] == "Données privées"
     assert all(CONFIG["token"] not in p.name for p in cache.iterdir())
+
+
+def test_network_push_does_not_block_local_saves(setup):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    server, remote, cache = setup
+    local = working(remote, cache)
+    estimate = local.create_estimate("Avant le départ")
+    entered, release = Event(), Event()
+    original_push = remote.sync_push
+
+    def delayed_push(changes, operation_id):
+        entered.set()
+        assert release.wait(5)
+        return original_push(changes, operation_id)
+
+    remote.sync_push = delayed_push
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        sync = pool.submit(local.synchronize_deferred)
+        assert entered.wait(2)
+        estimate["name"] = "Modifié pendant la connexion"
+        try:
+            saved = pool.submit(local.save_estimate, estimate, estimate["revision"]).result(timeout=2)
+        finally:
+            release.set()
+        assert sync.result(timeout=5)
+    assert local.get_estimate(estimate["id"]) == saved
+    assert server.get_estimate(estimate["id"])["name"] == "Avant le départ"
+    assert local.pending_count == 1
+    assert not local.apply_pending_snapshot()
+    assert local.synchronize()
+    assert server.get_estimate(estimate["id"]) == saved
+
+
+def test_deferred_snapshot_waits_for_editor_and_rejects_local_edits(setup):
+    server, remote, cache = setup
+    estimate = server.create_estimate("Initial")
+    local = working(remote, cache)
+    changed = dict(estimate, name="Sur le serveur")
+    server.save_estimate(changed, changed["revision"])
+    assert local.synchronize_deferred()
+    # A GUI with an unsaved form can simply postpone installation.
+    assert local.get_estimate(estimate["id"]) == estimate
+    edited = dict(estimate, name="Saisie locale")
+    edited = local.save_estimate(edited, edited["revision"])
+    assert not local.apply_pending_snapshot()
+    assert local.get_estimate(estimate["id"]) == edited
+    assert local.pending_count == 1
+
+
+def test_edit_during_snapshot_fetch_is_not_overwritten(setup):
+    server, remote, cache = setup
+    local = working(remote, cache)
+    original_snapshot = remote.sync_snapshot
+    edited = []
+
+    def snapshot_with_edit():
+        snapshot = original_snapshot()
+        # A separate Store connection must be able to save while the network
+        # request is outstanding, and that save must invalidate the snapshot.
+        edited.append(Store(local.path).create_estimate("Saisie pendant réception"))
+        return snapshot
+
+    remote.sync_snapshot = snapshot_with_edit
+    assert local.synchronize()
+    assert local.get_estimate(edited[0]["id"]) == edited[0]
+    assert local.pending_count == 1
+
+
+def test_deferred_snapshot_cannot_roll_back_another_process_sync(setup):
+    server, remote, cache = setup
+    local = working(remote, cache)
+    other = working(Network(server), cache)
+    assert local.synchronize_deferred()
+    latest = server.create_estimate("Nouvelle affaire bureau")
+    assert other.synchronize()
+    assert local.pending_count == 0
+    assert not local.apply_pending_snapshot()
+    assert local.get_estimate(latest["id"]) == latest
+
+
+def test_deferred_snapshot_can_be_applied_when_idle(setup):
+    server, remote, cache = setup
+    local = working(remote, cache)
+    latest = server.create_estimate("Nouvelle affaire bureau")
+    assert local.synchronize_deferred()
+    assert local.list_estimates() == []
+    assert local.apply_pending_snapshot()
+    assert local.get_estimate(latest["id"]) == latest
+    assert not local.apply_pending_snapshot()
+
+
+def test_late_ack_does_not_erase_another_process_outbox(setup):
+    server, remote, cache = setup
+    local = working(remote, cache)
+    other_remote = Network(server)
+    other = working(other_remote, cache)
+    first = local.create_estimate("Premier lot")
+    original_push = remote.sync_push
+    newer = []
+
+    def push_with_second_process(changes, operation_id):
+        result = original_push(changes, operation_id)
+        assert other.synchronize()  # Acknowledges the same durable first lot.
+        newer.append(other.create_estimate("Deuxième lot"))
+        other_remote.lose_ack = True
+        assert not other.synchronize()  # Leaves its own durable retry receipt.
+        return result
+
+    remote.sync_push = push_with_second_process
+    assert local.synchronize_deferred()
+    with local.connection() as db:
+        import json
+        queued = json.loads(db.execute("SELECT value FROM sync_meta WHERE key='outbox'").fetchone()[0])
+    assert [change["id"] for change in queued] == [newer[0]["id"]]
+    assert local.get_estimate(first["id"]) == first
+    remote.sync_push = original_push
+    assert local.synchronize()
+    assert local.pending_count == 0
+    assert len(server.list_estimates()) == 2

@@ -77,7 +77,7 @@ def test_sync_is_background_and_does_not_overlap(window):
     QApplication.processEvents()
     assert tick
     assert not window.sync_button.isEnabled()
-    assert not window.tabs.isEnabled()
+    assert window.tabs.isEnabled()
     window.start_sync()
     assert window.store.calls == 1
     window.store.release.set()
@@ -99,6 +99,29 @@ def test_sync_preserves_unsaved_fields(window):
     assert window.metadata["client"].text() == "Saisie en cours"
     assert window.setting_fields["company"].text() == "Entreprise en cours"
     assert window.dirty and window.settings_dirty
+
+
+def test_editing_during_network_keeps_fields_and_defers_snapshot(window):
+    window.current = window.store.create_estimate("Affaire")
+    window.render()
+    window.store.release.clear()
+    applied = []
+    window.store.apply_pending_snapshot = lambda: applied.append(True)
+    window.start_sync()
+    assert window.store.started.wait(1)
+    assert window.metadata['client'].isEnabled()
+    window.metadata['client'].setText('Saisie pendant le réseau')
+    window.metadata['client'].setCursorPosition(5)
+    window.mark_dirty()
+    window.store.release.set()
+    finish(window)
+    assert window.dirty
+    assert window.metadata['client'].text() == 'Saisie pendant le réseau'
+    assert window.metadata['client'].cursorPosition() == 5
+    assert not applied
+    assert window.save_current()
+    window.poll()
+    assert applied
 
 
 def test_sync_refreshes_changed_object_with_same_revision(window):

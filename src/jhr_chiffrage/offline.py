@@ -30,6 +30,8 @@ class OfflineStore(Store):
         if os.name != 'nt':
             root.chmod(0o700)
         self._sync_lock = RLock()
+        self._pending_lock = RLock()
+        self._pending_snapshot = None
         self.has_conflict = False
         self.online = False
         self.last_error = ''
@@ -106,37 +108,85 @@ class OfflineStore(Store):
         db.execute("INSERT OR REPLACE INTO sync_meta VALUES('ready','1')")
         db.execute("INSERT OR REPLACE INTO sync_meta VALUES('last_sync',?)", (now(),))
 
+    def _cache_token(self, db):
+        # Include working data and a durable generation: another process may
+        # finish a sync while this process is waiting for the server.
+        state = [list(db.execute('SELECT kind,id,body FROM objects ORDER BY kind,id')),
+                 list(db.execute('SELECT kind,id,body FROM sync_baseline ORDER BY kind,id')),
+                 list(db.execute("SELECT key,value FROM sync_meta WHERE key IN ('outbox','ready','generation') ORDER BY key"))]
+        return hashlib.sha256(encode(state).encode()).hexdigest()
+
+    def apply_pending_snapshot(self):
+        """Apply on the UI thread only when its editor is clean and idle.
+
+        No network lock is taken here. Persisted changes made during the fetch
+        invalidate the snapshot, including edits from a separate MCP process.
+        """
+        with self._pending_lock:
+            pending, self._pending_snapshot = self._pending_snapshot, None
+        if pending is None:
+            return False
+        token, objects = pending
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if (self._changes(db) or
+                    db.execute("SELECT 1 FROM sync_meta WHERE key='outbox'").fetchone() or
+                    self._cache_token(db) != token):
+                return False
+            self._install_snapshot(db, objects)
+            db.execute("INSERT OR REPLACE INTO sync_meta VALUES('generation',?)", (str(uuid4()),))
+            db.commit()
+        return True
+
     def synchronize(self):
+        return self._synchronize(deferred=False)
+
+    def synchronize_deferred(self):
+        """Fetch in a worker; the GUI installs later without replacing edits."""
+        return self._synchronize(deferred=True)
+
+    def _synchronize(self, *, deferred):
         with self._sync_lock:
             try:
-                # SQLite serializes sync with edits from other UI/MCP processes.
-                # WAL readers remain available while the network request runs.
+                with self._pending_lock:
+                    self._pending_snapshot = None
+                # Freeze the exact durable request, then release SQLite before
+                # any network wait so editors and MCP can continue saving.
                 with self.connection() as db:
                     db.execute('BEGIN IMMEDIATE')
                     changes = self._changes(db)
                     queued = db.execute("SELECT value FROM sync_meta WHERE key='outbox'").fetchone()
                     if changes and not queued:
-                        db.execute("INSERT INTO sync_meta VALUES('outbox',?)", (encode(changes),))
-                        # Freeze the exact request on disk before any network write.
-                        # Later local edits must not change an unacknowledged batch.
-                        db.commit()
-                        db.execute('BEGIN IMMEDIATE')
-                        queued = db.execute("SELECT value FROM sync_meta WHERE key='outbox'").fetchone()
-                    if queued:
-                        batch = json.loads(queued[0])
-                        operation_id = 'offline-' + hashlib.sha256(encode(batch).encode()).hexdigest()
-                        self.remote.sync_push(batch, operation_id)
-                        for change in batch:
-                            db.execute('INSERT OR REPLACE INTO sync_baseline VALUES(?,?,?)',
-                                       (change['kind'], change['id'], encode(change['body'])))
-                        db.execute("DELETE FROM sync_meta WHERE key='outbox'")
-                        # Acknowledge durable writes before fetching the next snapshot.
-                        db.commit()
-                        db.execute('BEGIN IMMEDIATE')
-                    # Another process may edit during that commit boundary.
-                    if not self._changes(db):
-                        self._install_snapshot(db, self._snapshot())
+                        payload = encode(changes)
+                        db.execute("INSERT INTO sync_meta VALUES('outbox',?)", (payload,))
+                        queued = (payload,)
                     db.commit()
+                if queued:
+                    batch = json.loads(queued[0])
+                    operation_id = 'offline-' + hashlib.sha256(encode(batch).encode()).hexdigest()
+                    self.remote.sync_push(batch, operation_id)
+                    with self.connection() as db:
+                        db.execute('BEGIN IMMEDIATE')
+                        current = db.execute("SELECT value FROM sync_meta WHERE key='outbox'").fetchone()
+                        # A second process may already have acknowledged this
+                        # batch and queued another. Never erase its newer work.
+                        if current and current[0] == queued[0]:
+                            for change in batch:
+                                db.execute('INSERT OR REPLACE INTO sync_baseline VALUES(?,?,?)',
+                                           (change['kind'], change['id'], encode(change['body'])))
+                            db.execute("DELETE FROM sync_meta WHERE key='outbox'")
+                            db.execute("INSERT OR REPLACE INTO sync_meta VALUES('generation',?)", (str(uuid4()),))
+                        db.commit()
+                with self.connection() as db:
+                    db.execute('BEGIN')
+                    clean = not self._changes(db) and not db.execute("SELECT 1 FROM sync_meta WHERE key='outbox'").fetchone()
+                    token = self._cache_token(db) if clean else None
+                if clean:
+                    objects = self._snapshot()
+                    with self._pending_lock:
+                        self._pending_snapshot = (token, objects)
+                    if not deferred:
+                        self.apply_pending_snapshot()
                 self.online = True
                 self.has_conflict = False
                 self.last_error = ''
