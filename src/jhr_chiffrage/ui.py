@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QTabBar,
     QFrame, QSizePolicy, QHeaderView, QToolButton, QMenu, QSpinBox, QAbstractSpinBox,
 )
+from . import __version__
 from .core import Store, calculate, DomainError, clone_items
 from .theme import LIGHT_THEME
 from .connection import load_connection, save_connection, open_store, RemoteStore
@@ -554,6 +555,11 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(label("CHIFFRAGE  /  ÉTUDES & DESSIN", "brandSubtitle"))
         header_layout.addStretch()
         header_layout.addWidget(label("Votre espace de chiffrage", "subtle"))
+        self.version_label = label(f"v{__version__}", "subtle")
+        self.version_label.setToolTip("Version du logiciel JHR Chiffrage")
+        self.version_label.setAccessibleName(f"Version du logiciel {__version__}")
+        header_layout.addSpacing(12)
+        header_layout.addWidget(self.version_label)
         shell_layout.addWidget(header)
         self.tabs = QTabWidget()
         self.tabs.setObjectName("mainNavigation")
