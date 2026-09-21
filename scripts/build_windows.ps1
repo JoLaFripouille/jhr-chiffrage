@@ -16,7 +16,7 @@ $env:PATH = @((Split-Path -Parent $Python), "$env:SystemRoot\System32", "$env:Sy
 Push-Location $ProjectRoot
 try {
     $Common = @('-m', 'PyInstaller', '--noconfirm', '--onedir', '--paths', 'src', '--distpath', (Join-Path $StagingRoot 'dist'), '--workpath', (Join-Path $StagingRoot 'build'), '--specpath', 'packaging', '--copy-metadata', 'platformdirs')
-    & $Python @Common --name JHRChiffrage --windowed packaging/desktop_entry.py
+    & $Python @Common --name JHRChiffrage --windowed --icon (Join-Path $ProjectRoot 'src/jhr_chiffrage/assets/chiffrage.ico') --add-data "$ProjectRoot/src/jhr_chiffrage/assets;jhr_chiffrage/assets" packaging/desktop_entry.py
     if ($LASTEXITCODE -ne 0) { throw 'Échec du build bureau.' }
     & $Python @Common --name JHRChiffrageMCP --console --copy-metadata mcp packaging/mcp_entry.py
     if ($LASTEXITCODE -ne 0) { throw 'Échec du build MCP.' }

@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import sys
 import uuid
+from pathlib import Path
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from PySide6.QtCore import Qt, QTimer, QPointF, Signal
@@ -510,6 +511,7 @@ class MainWindow(QMainWindow):
         self.loading = False
         self.active_work_id = None
         self.setWindowTitle("JHR Chiffrage")
+        self.setWindowIcon(QIcon(str(Path(__file__).parent / "assets/chiffrage.png")))
         self.resize(1360, 900)
         self.setStyleSheet(LIGHT_THEME)
         self.setFont(QFont("Segoe UI", 10))
@@ -521,6 +523,10 @@ class MainWindow(QMainWindow):
         header.setObjectName("appHeader")
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(25, 8, 25, 8)
+        app_icon = QLabel()
+        app_icon.setPixmap(self.windowIcon().pixmap(32, 32))
+        app_icon.setAccessibleName("Icône Ch — JHR Chiffrage")
+        header_layout.addWidget(app_icon)
         header_layout.addWidget(label("JHR", "brand"))
         header_layout.addWidget(label("CHIFFRAGE  /  ÉTUDES & DESSIN", "brandSubtitle"))
         header_layout.addStretch()
@@ -1333,6 +1339,7 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("JHR Chiffrage")
+    app.setWindowIcon(QIcon(str(Path(__file__).parent / "assets/chiffrage.png")))
     app.setStyle("Fusion")
     while True:
         try:

@@ -4,6 +4,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import shutil
 
 
 def desktop_quote(value):
@@ -38,11 +39,15 @@ def main():
         launcher.chmod(0o755)
     apps = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "applications"
     apps.mkdir(parents=True, exist_ok=True)
+    import jhr_chiffrage
+    icon_dir = apps.parent / "icons/hicolor/512x512/apps"
+    icon_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(Path(jhr_chiffrage.__file__).parent / "assets/chiffrage.png", icon_dir / "jhr-chiffrage.png")
     (apps / "jhr-chiffrage.desktop").write_text(
         "[Desktop Entry]\nType=Application\nName=JHR Chiffrage\n"
         "Comment=Chiffrage des études et dessins\n"
         f"Exec={desktop_quote(str(bin_dir / 'jhr-chiffrage'))}\n"
-        "Icon=accessories-calculator\nTerminal=false\nCategories=Office;\n", encoding="utf-8")
+        "Icon=jhr-chiffrage\nTerminal=false\nCategories=Office;\n", encoding="utf-8")
     print("Installation terminée. Ouvrez JHR Chiffrage depuis le menu des applications.")
     print(f"Ou exécutez : {shlex.quote(str(bin_dir / 'jhr-chiffrage'))}")
     print("Aucune base de données n'a été ouverte ni modifiée par l'installation.")
