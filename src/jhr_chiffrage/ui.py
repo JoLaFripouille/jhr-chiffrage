@@ -74,6 +74,7 @@ class SubpostDelegate(QStyledItemDelegate):
 
 class PostTree(QTreeWidget):
     addChildRequested = Signal(str)
+    duplicateRequested = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -133,6 +134,7 @@ class PostTree(QTreeWidget):
         item_id = item.data(0, Qt.UserRole)
         menu = QMenu(self)
         menu.addAction("Ajouter un sous-poste", lambda: self.addChildRequested.emit(item_id))
+        menu.addAction("Dupliquer le poste et ses sous-postes", lambda: self.duplicateRequested.emit(item_id))
         menu.exec(self.viewport().mapToGlobal(point))
 
 
@@ -810,6 +812,9 @@ class MainWindow(QMainWindow):
         self.work_tabs.currentChanged.connect(self.change_work_tab)
         self.work_tabs.tabBarDoubleClicked.connect(self.rename_work)
         self.work_tabs.tabMoved.connect(self.move_work_tab)
+        self.work_tabs.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.work_tabs.customContextMenuRequested.connect(self.work_context_menu)
+        self.work_tabs.setToolTip("Clic droit sur un onglet pour dupliquer l’ouvrage")
         work_tabs_row.addWidget(self.work_tabs)
         self.add_work_button = AddWorkButton()
         self.add_work_button.clicked.connect(self.add_work)
@@ -833,6 +838,10 @@ class MainWindow(QMainWindow):
         self.tree.setRootIsDecorated(True)
         self.tree.setIndentation(38)
         self.tree.addChildRequested.connect(self.add_sub_item)
+        self.tree.duplicateRequested.connect(self.duplicate_item)
+        self.duplicate_post_shortcut = QShortcut(QKeySequence("Ctrl+D"), self.tree)
+        self.duplicate_post_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self.duplicate_post_shortcut.activated.connect(self.duplicate_item)
         self.tree.setAlternatingRowColors(True)
         self.tree.setUniformRowHeights(True)
         self.tree.setHeaderLabels(["DÉSIGNATION", "CALCUL", "QTÉ", "DURÉE", "TAUX / PRIX HT", "TOTAL HT", ""])
@@ -1341,6 +1350,81 @@ class MainWindow(QMainWindow):
             data["parent_id"] = parent_id
             items.append(data)
             self.changed_tree()
+
+    def work_context_menu(self, point):
+        index = self.work_tabs.tabAt(point)
+        if index < 0 or not self.current or self.current['status'] != 'draft':
+            return
+        work_id = self.work_tabs.tabData(index)
+        menu = QMenu(self.work_tabs)
+        menu.addAction("Dupliquer cet ouvrage", lambda: self.duplicate_work(work_id))
+        menu.addAction("Renommer cet ouvrage", lambda: self.rename_work(index))
+        menu.exec(self.work_tabs.mapToGlobal(point))
+
+    @staticmethod
+    def copy_name(name, existing):
+        result = f"{name} — copie"
+        index = 2
+        while result in existing:
+            result = f"{name} — copie {index}"
+            index += 1
+        return result
+
+    def duplicate_work(self, work_id=None):
+        if not self.current or self.current['status'] != 'draft':
+            return
+        works = self.current['works']
+        selected_id = work_id or self.active_work_id
+        index = next((i for i, work in enumerate(works) if work['id'] == selected_id), None)
+        if index is None:
+            return
+        duplicated = copy.deepcopy(works[index])
+        duplicated['id'] = uid()
+        duplicated['name'] = self.copy_name(duplicated['name'], {w['name'] for w in works})
+        duplicated['items'] = clone_items(duplicated['items'])
+        works.insert(index + 1, duplicated)
+        self.active_work_id = duplicated['id']
+        self.changed_tree()
+        self.statusBar().showMessage("Ouvrage dupliqué. Vous pouvez le renommer et l’adapter, puis enregistrer.", 6000)
+
+    def duplicate_item(self, item_id=None):
+        if not self.current or self.current['status'] != 'draft':
+            return
+        wi, ii = self.selection()
+        if wi is None:
+            return
+        items = self.current['works'][wi]['items']
+        if item_id is not None:
+            ii = next((i for i, item in enumerate(items) if item['id'] == item_id), None)
+        if ii is None:
+            return
+        original = items[ii]
+        identifiers = descendant_ids(items, original['id'])
+        branch = copy.deepcopy([item for item in items if item['id'] in identifiers])
+        root_index = next(i for i, item in enumerate(branch) if item['id'] == original['id'])
+        # Clone a standalone tree, then reattach its root to the same parent.
+        branch[root_index].pop('parent_id', None)
+        duplicated = clone_items(branch)
+        root = duplicated[root_index]
+        if original.get('parent_id') is not None:
+            root['parent_id'] = original['parent_id']
+        root['label'] = self.copy_name(original['label'], {i['label'] for i in items})
+        insertion = max(i for i, item in enumerate(items) if item['id'] in identifiers) + 1
+        items[insertion:insertion] = duplicated
+        self.changed_tree()
+        iterator = QTreeWidgetItemIterator(self.tree)
+        while iterator.value():
+            node = iterator.value()
+            if node.data(0, Qt.UserRole) == root['id']:
+                parent = node.parent()
+                while parent is not None:
+                    parent.setExpanded(True)
+                    parent = parent.parent()
+                self.tree.setCurrentItem(node)
+                self.tree.scrollToItem(node)
+                break
+            iterator += 1
+        self.statusBar().showMessage("Poste et sous-postes dupliqués. Pensez à enregistrer.", 5000)
 
     def remove_selected(self):
         if not self.current or self.current["status"] != "draft":

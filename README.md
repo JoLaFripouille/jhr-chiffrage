@@ -2,6 +2,8 @@
 
 Application de bureau native pour chiffrer les études et dessins : affaires, ouvrages par onglets, postes et sous-postes, gabarits, heures/minutes, taux horaire HT, TVA et prélèvements estimés. Interface Qt pour Windows et Ubuntu, sans navigateur.
 
+Pour dupliquer un ouvrage, faire un clic droit sur son onglet puis **Dupliquer cet ouvrage**. Pour un poste et ses sous-postes, faire un clic droit sur sa ligne puis **Dupliquer le poste et ses sous-postes**, ou sélectionner la ligne et utiliser **Ctrl+D**. Les copies sont indépendantes et restent dans le brouillon ; cliquer sur **Enregistrer** pour les conserver et les synchroniser.
+
 ## Installer sur Ubuntu
 
 Python 3.11 minimum, module venv, Git et Internet requis. Ubuntu 24.04 fournit Python 3.12 ; le Python 3.10 d'Ubuntu 22.04 est trop ancien. L'installateur indique les bibliothèques graphiques manquantes et n'installe aucun paquet système automatiquement.
