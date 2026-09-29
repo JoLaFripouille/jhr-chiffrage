@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSplitter, QTabWidget,
     QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QTabBar,
     QFrame, QSizePolicy, QHeaderView, QToolButton, QMenu, QSpinBox, QAbstractSpinBox,
-    QStyledItemDelegate, QStyleOptionViewItem, QStyle, QCompleter,
+    QStyledItemDelegate, QStyleOptionViewItem, QStyle, QCompleter, QScrollArea,
 )
 from . import __version__
 from .core import Store, calculate, DomainError, clone_items
@@ -752,9 +752,18 @@ class MainWindow(QMainWindow):
     def __init__(self, store=None):
         super().__init__()
         self.store = store if store is not None else open_store()
-        from .recovery import RecoveryFile
+        from .recovery import RecoveryFile, AutosavePreferences
         self.recovery = RecoveryFile(self.store)
         self.recovery_editor = None
+        self.autosave_preferences = AutosavePreferences(self.store)
+        try:
+            self.autosave_options = self.autosave_preferences.load()
+        except (OSError, ValueError):
+            logging.getLogger(__name__).exception("Cannot load autosave preferences")
+            self.autosave_options = {"after_post": False, "idle": False, "seconds": 60}
+        self.autosave_timer = QTimer(self)
+        self.autosave_timer.setSingleShot(True)
+        self.autosave_timer.timeout.connect(self.autosave_current)
         self.sync_enabled = callable(getattr(self.store, "synchronize", None))
         self.sync_worker = None
         self.close_after_sync = False
@@ -1114,13 +1123,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(note)
         form = QFormLayout()
         self.setting_fields = {}
-        for key, label in [("company", "Entreprise"), ("hourly_rate", "Taux horaire HT (€)"),
+        for key, field_title in [("company", "Entreprise"), ("hourly_rate", "Taux horaire HT (€)"),
                            ("vat_rate", "TVA (%)"), ("levy_rate", "Prélèvements estimés (%)")]:
             field = QLineEdit()
             if key in ("hourly_rate", "levy_rate"):
                 field.setPlaceholderText("À renseigner explicitement")
             field.textEdited.connect(self.settings_changed)
-            form.addRow(label, field)
+            form.addRow(field_title, field)
             self.setting_fields[key] = field
         self.vat_enabled = QCheckBox("Appliquer la TVA")
         self.vat_enabled.clicked.connect(self.settings_changed)
@@ -1130,6 +1139,28 @@ class MainWindow(QMainWindow):
         button("Désignations fréquentes…", self.manage_designations, layout)
         button("Créer une sauvegarde des données", self.backup, layout)
         button("Ouvrir les journaux d’erreurs", self.open_diagnostics, layout)
+        layout.addWidget(label("Enregistrement automatique des affaires", "sectionTitle"))
+        self.autosave_post = QCheckBox("Après chaque ajout, modification ou suppression de poste / ouvrage")
+        self.autosave_post.setChecked(self.autosave_options["after_post"])
+        layout.addWidget(self.autosave_post)
+        autosave_row = QHBoxLayout()
+        self.autosave_idle = QCheckBox("Après une pause dans la saisie de")
+        self.autosave_idle.setChecked(self.autosave_options["idle"])
+        self.autosave_seconds = QSpinBox()
+        self.autosave_seconds.setRange(5, 3600)
+        self.autosave_seconds.setSuffix(" secondes")
+        self.autosave_seconds.setValue(self.autosave_options["seconds"])
+        self.autosave_seconds.setEnabled(self.autosave_options["idle"])
+        autosave_row.addWidget(self.autosave_idle)
+        autosave_row.addWidget(self.autosave_seconds)
+        autosave_row.addStretch()
+        layout.addLayout(autosave_row)
+        autosave_note = QLabel("Uniquement si l’affaire a changé. Une fenêtre de saisie doit être validée avant l’enregistrement.\nCes réglages sont conservés sur ce PC. La copie de secours reste toujours active.")
+        autosave_note.setWordWrap(True)
+        layout.addWidget(autosave_note)
+        self.autosave_post.toggled.connect(self.configure_autosave)
+        self.autosave_idle.toggled.connect(self.configure_autosave)
+        self.autosave_seconds.valueChanged.connect(self.configure_autosave)
         connection_label = QLabel("Connexion actuelle : serveur avec copie hors ligne sur ce PC" if self.sync_enabled else "Connexion actuelle : serveur partagé" if isinstance(self.store, RemoteStore) else "Connexion actuelle : cet ordinateur")
         layout.addWidget(connection_label)
         button("Configurer la connexion…", self.configure_connection, layout)
@@ -1137,7 +1168,43 @@ class MainWindow(QMainWindow):
         limits.setWordWrap(True)
         layout.addWidget(limits)
         layout.addStretch()
-        self.tabs.addTab(page, "Paramètres")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(page)
+        self.tabs.addTab(scroll, "Paramètres")
+
+    def configure_autosave(self, *_):
+        self.autosave_options = {"after_post": self.autosave_post.isChecked(),
+                                 "idle": self.autosave_idle.isChecked(),
+                                 "seconds": self.autosave_seconds.value()}
+        self.autosave_seconds.setEnabled(self.autosave_options["idle"])
+        try:
+            self.autosave_preferences.write(self.autosave_options)
+        except OSError:
+            logging.getLogger(__name__).exception("Cannot save autosave preferences")
+            self.statusBar().showMessage("Réglages d’enregistrement automatique non conservés.")
+        self.autosave_timer.stop()
+        self.schedule_autosave()
+
+    def schedule_autosave(self, post_changed=False):
+        if not self.dirty or self.closing:
+            return
+        if post_changed and self.autosave_options["after_post"]:
+            self.autosave_timer.start(0)
+        elif self.autosave_options["idle"]:
+            self.autosave_timer.start(self.autosave_options["seconds"] * 1000)
+
+    def autosave_current(self):
+        if not self.dirty or self.closing:
+            return
+        if QApplication.activeModalWidget() or self.recovery_editor or self.sync_worker is not None:
+            self.autosave_timer.start(500)
+            return
+        logging.getLogger(__name__).info("Automatic save begin")
+        if self.save_current(automatic=True):
+            self.statusBar().showMessage("Enregistrement automatique effectué.", 5000)
+            logging.getLogger(__name__).info("Automatic save complete")
 
     def open_diagnostics(self):
         from .diagnostics import logs_directory
@@ -1310,6 +1377,7 @@ class MainWindow(QMainWindow):
         self.dirty = True
         self.write_recovery()
         self.update_totals()
+        self.schedule_autosave()
 
     def write_recovery(self):
         try:
@@ -1606,6 +1674,7 @@ class MainWindow(QMainWindow):
     def changed_tree(self):
         self.mark_dirty()
         self.render_tree()
+        self.schedule_autosave(post_changed=True)
 
     def add_work(self):
         if not self.current or self.current["status"] != "draft":
@@ -1755,7 +1824,7 @@ class MainWindow(QMainWindow):
         self.current["works"][wi]["items"] = [item for item in items if item["id"] not in removed]
         self.changed_tree()
 
-    def save_current(self):
+    def save_current(self, automatic=False):
         if not self.current:
             return True
         if self.current["status"] == "frozen":
@@ -1763,13 +1832,18 @@ class MainWindow(QMainWindow):
         try:
             self.current = self.store.save_estimate(self.collect(), self.current["revision"])
             self.dirty = False
+            self.autosave_timer.stop()
             self.write_recovery()
             self.refresh_lists()
             self.render()
             self.statusBar().showMessage("Affaire enregistrée.", 4000)
             return True
-        except DomainError as exc:
-            self.error(exc)
+        except (DomainError, OSError) as exc:
+            if automatic:
+                logging.getLogger(__name__).exception("Automatic save failed; safety copy retained")
+                self.statusBar().showMessage(f"Enregistrement automatique impossible : {exc}. Copie de secours conservée ; utilisez Enregistrer.")
+            else:
+                self.error(exc)
             return False
 
     def reload_current(self):
@@ -1942,6 +2016,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.timer.stop()
+        self.autosave_timer.stop()
         if self.sync_enabled:
             self.sync_timer.stop()
         self.dirty = self.settings_dirty = False

@@ -37,3 +37,16 @@ class RecoveryFile:
             os.replace(temporary, self.path)
         finally:
             Path(temporary).unlink(missing_ok=True)
+
+
+class AutosavePreferences(RecoveryFile):
+    def __init__(self, store):
+        super().__init__(store)
+        self.path = self.path.with_suffix(".autosave.json")
+
+    def load(self):
+        data = self.read() or {}
+        seconds = data.get("seconds", 60)
+        return {"after_post": data.get("after_post") is True,
+                "idle": data.get("idle") is True,
+                "seconds": seconds if type(seconds) is int and 5 <= seconds <= 3600 else 60}
