@@ -72,6 +72,57 @@ class SubpostDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+class WorkTotalsFooter(QWidget):
+    """Fixed totals aligned with the tree's current column positions."""
+    def __init__(self, tree):
+        super().__init__()
+        self.tree = tree
+        self.setFixedHeight(38)
+        self.actions = QWidget(self)
+        self.remove_work_button = None
+        self.caption = QLabel("Total ouvrage", self)
+        self.hours = QLabel(self)
+        self.amount = QLabel(self)
+        for field in (self.caption, self.hours, self.amount):
+            field.setObjectName("workTotal")
+        for field in (self.hours, self.amount):
+            field.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        tree.header().sectionResized.connect(self.align_columns)
+        tree.header().sectionMoved.connect(self.align_columns)
+        tree.header().geometriesChanged.connect(self.align_columns)
+        tree.horizontalScrollBar().valueChanged.connect(self.align_columns)
+
+    def align_columns(self, *_):
+        origin = self.tree.viewport().x()
+        header = self.tree.header()
+        for field, column in ((self.caption, 0), (self.hours, 3), (self.amount, 5)):
+            field.setGeometry(origin + header.sectionViewportPosition(column), 0,
+                              header.sectionSize(column), self.height())
+            field.setVisible(not self.tree.isColumnHidden(column))
+        self.caption.hide()
+        self.actions.setGeometry(0, 0, max(0, origin + header.sectionViewportPosition(3)), self.height())
+        if self.remove_work_button is not None:
+            self.remove_work_button.setGeometry(origin + header.sectionViewportPosition(6), 0,
+                                                header.sectionSize(6), self.height())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.align_columns()
+
+    def set_totals(self, hours, amount):
+        self.caption.setText("Total ouvrage")
+        self.hours.setText(hours)
+        self.amount.setText(amount)
+
+    def setText(self, text):
+        self.caption.setText(text)
+        self.hours.clear()
+        self.amount.clear()
+
+    def text(self):
+        return f"{self.caption.text()} : {self.hours.text()} · {self.amount.text()} HT"
+
+
 class PostTree(QTreeWidget):
     addChildRequested = Signal(str)
     duplicateRequested = Signal(str)
@@ -944,8 +995,6 @@ class MainWindow(QMainWindow):
         panel = QVBoxLayout(work_panel)
         panel.setContentsMargins(14, 6, 14, 4)
         panel.setSpacing(4)
-        self.work_summary = label("Ajoutez un ouvrage avec le bouton +.", "workSummary")
-        self.work_summary.setWordWrap(True)
         self.tree = PostTree()
         self.tree.setRootIsDecorated(True)
         self.tree.setIndentation(38)
@@ -971,16 +1020,21 @@ class MainWindow(QMainWindow):
             self.tree.headerItem().setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
         self.tree.itemDoubleClicked.connect(lambda *_: self.edit_selected())
         panel.addWidget(self.tree, 1)
-        row = QHBoxLayout()
+        self.work_summary = WorkTotalsFooter(self.tree)
+        panel.addWidget(self.work_summary)
+        row = QHBoxLayout(self.work_summary.actions)
+        row.setContentsMargins(0, 0, 0, 0)
         edit_button = button("Modifier le poste", self.edit_selected, row)
         edit_button.setProperty("role", "quiet")
         remove_button = button("Retirer le poste", self.remove_selected, row)
         remove_button.setProperty("role", "quiet")
-        row.addWidget(self.work_summary, 1)
-        remove_work = button("Retirer cet ouvrage", self.remove_work, row)
+        row.addStretch(1)
+        remove_work = QPushButton("Retirer l’ouvrage", self.work_summary)
+        remove_work.clicked.connect(self.remove_work)
+        remove_work.setStyleSheet("padding: 3px; font-size: 11px;")
+        self.work_summary.remove_work_button = remove_work
         remove_work.setProperty("role", "danger")
         self.work_actions = [post_button, template_button, edit_button, remove_button, remove_work]
-        panel.addLayout(row)
         browser.addWidget(work_panel, 1)
         edit_layout.addLayout(browser, 1)
         content.addWidget(self.editor, 1)
@@ -1383,7 +1437,7 @@ class MainWindow(QMainWindow):
         try:
             result = result if result is not None else calculate(self.collect())
             totals = next(row for row in result['works'] if row['id'] == work['id'])
-            self.work_summary.setText(f"Total ouvrage : {duration_text(totals['hours'])}  ·  {money(totals['ht_cents'])} HT")
+            self.work_summary.set_totals(duration_text(totals["hours"]), money(totals["ht_cents"]))
             self.work_summary.setToolTip(f"{work['name']} · {len(work['items'])} poste(s), sous-postes compris.\nSomme des durées et des montants HT ; les charges renseignées pour les forfaits sont incluses."
                                          + ("\nChiffrage incomplet : voir les indications sous la synthèse." if result['incomplete'] else ""))
         except (DomainError, StopIteration):

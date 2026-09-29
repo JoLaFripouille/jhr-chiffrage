@@ -14,7 +14,7 @@ QLabel#pageTitle { font-size: 23px; font-weight: 600; color: #1e3352; }
 QLabel#eyebrow { color: #7c8aa0; font-size: 11px; font-weight: 600; }
 QFrame#workPanel { background: #ffffff; border: 1px solid #dce4f0; border-top-left-radius: 0px; border-top-right-radius: 10px; border-bottom-left-radius: 10px; border-bottom-right-radius: 10px; }
 QWidget#workToolbar { background: #ffffff; }
-QLabel#workSummary { color: #243d60; font-size: 13px; font-weight: 600; padding: 3px 0px; }
+QLabel#workTotal { color: #243d60; font-size: 16px; font-weight: 700; padding: 0px 8px; }
 QTabBar#workTabs::tab { background: #e7ecf4; color: #60728c; border: 1px solid #dce4f0; border-bottom: 0; border-top-left-radius: 9px; border-top-right-radius: 9px; padding: 7px 16px; margin-right: 5px; }
 QTabBar#workTabs::tab:selected { background: #ffffff; color: #175ac0; font-weight: 600; border-top: 3px solid #3174d9; padding-top: 5px; }
 QTabBar#workTabs::tab:hover:!selected { background: #dce6f4; }

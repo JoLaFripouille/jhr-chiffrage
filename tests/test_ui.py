@@ -289,6 +289,15 @@ def test_work_footer_hours_amount_and_fixed_scroll_position(window, app):
     app.processEvents()
     assert window.work_summary.mapTo(window, QPoint(0, 0)) == position
     assert window.work_summary.isVisible()
+    for width in (1280, 1460):
+        window.resize(width, 720)
+        window.tree.setColumnWidth(3, 130)
+        app.processEvents()
+        for field, column in ((window.work_summary.hours, 3), (window.work_summary.amount, 5)):
+            assert field.mapTo(window, QPoint(0, 0)).x() == window.tree.viewport().mapTo(window, QPoint(window.tree.header().sectionViewportPosition(column), 0)).x()
+            assert field.width() == window.tree.columnWidth(column)
+            assert field.font().bold()
+
     assert position.y() >= window.tree.mapTo(window, QPoint(0, window.tree.height())).y()
 
 
