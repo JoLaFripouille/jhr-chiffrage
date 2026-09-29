@@ -294,7 +294,7 @@ def test_work_footer_hours_amount_and_fixed_scroll_position(window, app):
         window.resize(width, 720)
         window.tree.setColumnWidth(3, 130)
         app.processEvents()
-        for field, column in ((window.work_summary.hours, 3), (window.work_summary.amount, 5)):
+        for field, column in ((window.work_summary.hours, 3), (window.work_summary.amount, 6)):
             assert field.mapTo(window, QPoint(0, 0)).x() == window.tree.viewport().mapTo(window, QPoint(window.tree.header().sectionViewportPosition(column), 0)).x()
             assert field.width() == window.tree.columnWidth(column)
             assert field.font().bold()
@@ -435,3 +435,39 @@ def test_long_reference_starts_at_beginning_with_full_tooltip(window):
     window.render()
     assert window.metadata["reference"].cursorPosition() == 0
     assert window.metadata["reference"].toolTip() == reference
+
+
+def test_principal_totals_include_all_descendants_once(window, app):
+    from jhr_chiffrage.core import new_item, calculate
+    from jhr_chiffrage.ui import tree_nodes, POST_AMOUNT_COLUMN, TOTAL_COLUMN, ACTION_COLUMN
+    window.current = window.store.create_estimate("Hierarchy totals")
+    root, child, grandchild, greatgrandchild, other = [new_item(name) for name in ("Root", "Child", "Grandchild", "Great-grandchild", "Other")]
+    for item, price in zip((root, child, grandchild, greatgrandchild, other), ('80','20','20','10','15')):
+        item.update(mode='fixed', price=price, quantity='1')
+    child.update(parent_id=root['id'], quantity='2')
+    grandchild['parent_id']=child['id']
+    greatgrandchild['parent_id']=grandchild['id']
+    # Descendants need not appear after their parents in storage.
+    window.current['works']=[{'id':uid(),'name':'Work','items':[greatgrandchild,grandchild,child,root,other]}]
+    window.changed_tree()
+    nodes={node.data(0,Qt.UserRole):node for node in tree_nodes(window.tree)}
+    assert nodes[root['id']].text(POST_AMOUNT_COLUMN)=='80,00 €'
+    assert nodes[root['id']].text(TOTAL_COLUMN)=='150,00 €'
+    assert nodes[child['id']].text(POST_AMOUNT_COLUMN)=='40,00 €'
+    assert nodes[grandchild['id']].text(POST_AMOUNT_COLUMN)=='20,00 €'
+    assert nodes[greatgrandchild['id']].text(POST_AMOUNT_COLUMN)=='10,00 €'
+    assert all(nodes[item['id']].text(TOTAL_COLUMN)=='' for item in (child,grandchild,greatgrandchild))
+    assert nodes[other['id']].text(TOTAL_COLUMN)=='15,00 €'
+    assert nodes[root['id']].font(TOTAL_COLUMN).bold()
+    assert calculate(window.current)['ht_cents']==16500
+    assert window.work_summary.amount.text()=='165,00 €'
+    nodes[root['id']].setExpanded(False)
+    window.render_tree()
+    assert window.tree.topLevelItem(0).text(TOTAL_COLUMN)=='150,00 €'
+    assert not window.tree.topLevelItem(0).isExpanded()
+    window.tree.show_action(window.tree.topLevelItem(0))
+    assert window.tree.child_button.x()==window.tree.columnViewportPosition(ACTION_COLUMN)+3
+    greatgrandchild['price']='30'
+    window.changed_tree()
+    assert window.tree.topLevelItem(0).text(TOTAL_COLUMN)=='170,00 €'
+    assert window.work_summary.amount.text()=='185,00 €'

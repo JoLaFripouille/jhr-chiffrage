@@ -8,6 +8,8 @@ Dans la fenêtre d'un poste ou sous-poste, saisir une désignation puis cliquer 
 
 Le bas fixe du tableau affiche le total des heures et le total HT de l'ouvrage actif, postes et sous-postes compris, même pendant le défilement.
 
+La colonne **Poste seul HT** conserve le montant propre de chaque ligne. La colonne **Total HT** affiche uniquement, sur les postes principaux, le cumul du poste et de tous ses descendants (sous-postes, petits-enfants et niveaux suivants). Les cases Total HT des descendants restent vides. Replier une branche ne change pas les montants ; aucun poste n’est compté deux fois.
+
 ## Installer sur Ubuntu
 
 Python 3.11 minimum, module venv, Git et Internet requis. Ubuntu 24.04 fournit Python 3.12 ; le Python 3.10 d'Ubuntu 22.04 est trop ancien. L'installateur indique les bibliothèques graphiques manquantes et n'installe aucun paquet système automatiquement.

@@ -24,6 +24,11 @@ from .theme import LIGHT_THEME
 from .connection import load_connection, save_connection, open_store, RemoteStore
 
 
+POST_AMOUNT_COLUMN = 5
+TOTAL_COLUMN = 6
+ACTION_COLUMN = 7
+
+
 def uid():
     return str(uuid.uuid4())
 
@@ -96,15 +101,15 @@ class WorkTotalsFooter(QWidget):
     def align_columns(self, *_):
         origin = self.tree.viewport().x()
         header = self.tree.header()
-        for field, column in ((self.caption, 0), (self.hours, 3), (self.amount, 5)):
+        for field, column in ((self.caption, 0), (self.hours, 3), (self.amount, TOTAL_COLUMN)):
             field.setGeometry(origin + header.sectionViewportPosition(column), 0,
                               header.sectionSize(column), self.height())
             field.setVisible(not self.tree.isColumnHidden(column))
         self.caption.hide()
         self.actions.setGeometry(0, 0, max(0, origin + header.sectionViewportPosition(3)), self.height())
         if self.remove_work_button is not None:
-            self.remove_work_button.setGeometry(origin + header.sectionViewportPosition(6), 0,
-                                                header.sectionSize(6), self.height())
+            self.remove_work_button.setGeometry(origin + header.sectionViewportPosition(ACTION_COLUMN), 0,
+                                                header.sectionSize(ACTION_COLUMN), self.height())
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -122,6 +127,27 @@ class WorkTotalsFooter(QWidget):
 
     def text(self):
         return f"{self.caption.text()} : {self.hours.text()} · {self.amount.text()} HT"
+
+
+def principal_post_totals(items, amounts):
+    """Sum each amount once into its root, independently of display order/expansion."""
+    children = {}
+    for item in items:
+        children.setdefault(item.get("parent_id"), []).append(item["id"])
+    totals = {}
+    for root in children.get(None, []):
+        pending = [root]
+        visited = set()
+        total = 0
+        while pending:
+            ident = pending.pop()
+            if ident in visited:
+                continue
+            visited.add(ident)
+            total += amounts.get(ident, 0)
+            pending.extend(children.get(ident, []))
+        totals[root] = total
+    return totals
 
 
 def tree_nodes(tree):
@@ -175,8 +201,8 @@ class PostTree(QTreeWidget):
             return
         rect = self.visualItemRect(item)
         self.hover_id = item.data(0, Qt.UserRole)
-        self.child_button.setGeometry(self.columnViewportPosition(6) + 3, rect.y() + 2,
-                                      self.columnWidth(6) - 6, max(20, rect.height() - 4))
+        self.child_button.setGeometry(self.columnViewportPosition(ACTION_COLUMN) + 3, rect.y() + 2,
+                                      self.columnWidth(ACTION_COLUMN) - 6, max(20, rect.height() - 4))
         self.child_button.show()
         self.child_button.raise_()
 
@@ -1051,8 +1077,9 @@ class MainWindow(QMainWindow):
         self.duplicate_post_shortcut.activated.connect(self.duplicate_item)
         self.tree.setAlternatingRowColors(True)
         self.tree.setUniformRowHeights(True)
-        self.tree.setHeaderLabels(["DÉSIGNATION", "CALCUL", "QTÉ", "DURÉE", "TAUX / PRIX HT", "TOTAL HT", ""])
-        self.tree.setColumnWidth(6, 110)
+        self.tree.setHeaderLabels(["DÉSIGNATION", "CALCUL", "QTÉ", "DURÉE", "TAUX / PRIX HT", "POSTE SEUL HT", "TOTAL HT", ""])
+        self.tree.setColumnWidth(ACTION_COLUMN, 110)
+        self.tree.setColumnWidth(TOTAL_COLUMN, 115)
         self.tree.setColumnWidth(0, 300)
         self.tree.setColumnWidth(1, 80)
         self.tree.setColumnWidth(2, 55)
@@ -1061,8 +1088,10 @@ class MainWindow(QMainWindow):
         self.tree.setColumnWidth(5, 115)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        for column in (2, 3, 4, 5):
+        for column in (2, 3, 4, POST_AMOUNT_COLUMN, TOTAL_COLUMN):
             self.tree.headerItem().setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
+        self.tree.headerItem().setToolTip(POST_AMOUNT_COLUMN, "Montant propre à cette ligne, sans ses sous-postes.")
+        self.tree.headerItem().setToolTip(TOTAL_COLUMN, "Total du poste principal et de tous ses descendants. Affiché uniquement au premier niveau.")
         self.tree.itemDoubleClicked.connect(lambda *_: self.edit_selected())
         panel.addWidget(self.tree, 1)
         self.work_summary = WorkTotalsFooter(self.tree)
@@ -1533,6 +1562,7 @@ class MainWindow(QMainWindow):
         work = next((work for work in works if work["id"] == self.active_work_id), None)
         self.update_work_summary(calculated)
         if work:
+            principal_totals = principal_post_totals(work["items"], amounts)
             nodes = {}
             for item in work["items"]:
                 hourly = item["mode"] == "hourly"
@@ -1540,9 +1570,10 @@ class MainWindow(QMainWindow):
                                         str(item.get("quantity") or ""),
                                         duration_text(item.get("hours" if hourly else "estimated_hours"), item.get("duration_minutes" if hourly else "estimated_minutes")),
                                         str(item.get("rate" if hourly else "price") or ("Taux affaire" if hourly else "—")),
-                                        money(amounts.get(item["id"], 0))])
+                                        money(amounts.get(item["id"], 0)),
+                                        money(principal_totals[item["id"]]) if item["id"] in principal_totals else ""])
                 child.setData(0, Qt.UserRole, item["id"])
-                for column in (2, 3, 4, 5):
+                for column in (2, 3, 4, POST_AMOUNT_COLUMN, TOTAL_COLUMN):
                     child.setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
                 nodes[item["id"]] = child
             for item in work["items"]:
@@ -1562,6 +1593,7 @@ class MainWindow(QMainWindow):
                     heading_font = child.font(0)
                     heading_font.setBold(True)
                     child.setFont(0, heading_font)
+                    child.setFont(TOTAL_COLUMN, heading_font)
                 if item["id"] == selected_id:
                     self.tree.setCurrentItem(child)
             for ident, node in nodes.items():
