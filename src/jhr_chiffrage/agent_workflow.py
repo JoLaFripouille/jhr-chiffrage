@@ -1,5 +1,6 @@
 """Agent preparation of lots and nested ouvrages, committed as one revision."""
 from copy import deepcopy
+from decimal import Decimal
 import hashlib
 import json
 import os
@@ -117,11 +118,12 @@ def outline(estimate):
                 pending.append((node, True))
                 pending.extend((child, False) for child in node["children"])
             else:
+                node["subtree_hours"] = str(Decimal(node["own_hours"]) + sum((Decimal(child["subtree_hours"]) for child in node["children"]), Decimal(0)))
                 node["subtree_ht_cents"] = node["own_ht_cents"] + sum(child["subtree_ht_cents"] for child in node["children"])
         lots.append({"lot_id": work["id"], "name": work["name"], "ouvrages": roots})
     return {"estimate_id": estimate["id"], "revision": estimate["revision"], "status": estimate["status"],
             "lots": lots, "totals": totals,
-            "rule": "Own amounts are additive. Never add subtree totals to their descendants."}
+            "rule": "Own amounts and hours are additive. Never add subtree totals to their descendants."}
 
 
 def find_reusable(store, query, limit=30):

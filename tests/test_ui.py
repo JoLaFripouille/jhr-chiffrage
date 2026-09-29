@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 from jhr_chiffrage.core import Store
-from jhr_chiffrage.ui import MainWindow, ItemDialog, uid, duration_text
+from jhr_chiffrage.ui import MainWindow, ItemDialog, uid, duration_text, POST_AMOUNT_COLUMN, TOTAL_COLUMN, TOTAL_HOURS_COLUMN
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from jhr_chiffrage import ui
@@ -47,7 +47,7 @@ def test_create_edit_save_and_totals(window, monkeypatch):
     assert saved["client"] == "Atelier test"
     assert len(saved["works"][0]["items"]) == 1
     assert not window.dirty
-    assert window.tree.topLevelItem(0).text(5) == "300,00 €"
+    assert window.tree.topLevelItem(0).text(POST_AMOUNT_COLUMN) == "300,00 €"
     assert "300,00 €" in window.work_summary.text()
     assert not window.revise_button.isEnabled()
     assert "50 €/h" in window.totals.text()
@@ -294,11 +294,51 @@ def test_work_footer_hours_amount_and_fixed_scroll_position(window, app):
         window.resize(width, 720)
         window.tree.setColumnWidth(3, 130)
         app.processEvents()
-        for field, column in ((window.work_summary.hours, 3), (window.work_summary.amount, 6)):
+        for field, column in ((window.work_summary.hours, TOTAL_HOURS_COLUMN), (window.work_summary.amount, TOTAL_COLUMN)):
             assert field.mapTo(window, QPoint(0, 0)).x() == window.tree.viewport().mapTo(window, QPoint(window.tree.header().sectionViewportPosition(column), 0)).x()
             assert field.width() == window.tree.columnWidth(column)
             assert field.font().bold()
 
+
+
+def test_principal_hours_include_quantities_and_all_generations(window, app):
+    from copy import deepcopy
+    from decimal import Decimal
+    from jhr_chiffrage.core import new_item, calculate
+    from jhr_chiffrage.ui import tree_nodes
+    from jhr_chiffrage.agent_workflow import outline
+
+    window.current = window.store.create_estimate("Hours hierarchy")
+    root, child, grandchild, leaf, other = [new_item(str(i)) for i in range(5)]
+    root.update(duration_minutes=30, quantity='2')
+    child.update(parent_id=root['id'], duration_minutes=20, quantity='3')
+    grandchild.update(parent_id=child['id'], mode='fixed', price='50', quantity='4', estimated_minutes=15)
+    leaf.update(parent_id=grandchild['id'], hours='0.25')
+    other.update(duration_minutes=10)
+    window.current['works'] = [{'id': uid(), 'name': 'Lot', 'items': [leaf, child, other, grandchild, root]}]
+    original = deepcopy(window.current)
+    window.changed_tree()
+    nodes = {node.data(0, Qt.UserRole): node for node in tree_nodes(window.tree)}
+    assert nodes[root['id']].text(3) == '0 h 30 min'
+    assert nodes[child['id']].text(3) == '0 h 20 min'
+    assert nodes[root['id']].text(TOTAL_HOURS_COLUMN) == '2 h 30 min'
+    assert nodes[root['id']].font(TOTAL_HOURS_COLUMN).bold()
+    assert nodes[other['id']].text(TOTAL_HOURS_COLUMN) == '0 h 10 min'
+    assert all(nodes[item['id']].text(TOTAL_HOURS_COLUMN) == '' for item in (child, grandchild, leaf))
+    assert window.work_summary.hours.text() == '2 h 40 min'
+    assert window.current == original
+    branch = next(node for node in outline(window.current)['lots'][0]['ouvrages'] if node['id'] == root['id'])
+    assert Decimal(branch['subtree_hours']) == Decimal('2.5')
+    assert Decimal(branch['children'][0]['subtree_hours']) == Decimal('1.5')
+    nodes[root['id']].setExpanded(False)
+    window.render_tree()
+    assert window.work_summary.hours.text() == '2 h 40 min'
+    leaf['hours'] = '0.5'
+    window.changed_tree()
+    nodes = {node.data(0, Qt.UserRole): node for node in tree_nodes(window.tree)}
+    assert nodes[root['id']].text(TOTAL_HOURS_COLUMN) == '2 h 45 min'
+    assert window.work_summary.hours.text() == '2 h 55 min'
+    assert duration_text(calculate(window.current)['hours']) == '2 h 55 min'
 
 
 def test_tabs_keep_unsaved_changes_and_target_active_work(window, monkeypatch):

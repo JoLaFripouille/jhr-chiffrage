@@ -26,9 +26,10 @@ from .theme import LIGHT_THEME
 from .connection import load_connection, save_connection, open_store, RemoteStore
 
 
-POST_AMOUNT_COLUMN = 5
-TOTAL_COLUMN = 6
-ACTION_COLUMN = 7
+TOTAL_HOURS_COLUMN = 4
+POST_AMOUNT_COLUMN = 6
+TOTAL_COLUMN = 7
+ACTION_COLUMN = 8
 POST_MIME = "application/x-jhr-post-branch"
 
 
@@ -104,7 +105,7 @@ class WorkTotalsFooter(QWidget):
     def align_columns(self, *_):
         origin = self.tree.viewport().x()
         header = self.tree.header()
-        for field, column in ((self.caption, 0), (self.hours, 3), (self.amount, TOTAL_COLUMN)):
+        for field, column in ((self.caption, 0), (self.hours, TOTAL_HOURS_COLUMN), (self.amount, TOTAL_COLUMN)):
             field.setGeometry(origin + header.sectionViewportPosition(column), 0,
                               header.sectionSize(column), self.height())
             field.setVisible(not self.tree.isColumnHidden(column))
@@ -1260,19 +1261,22 @@ class MainWindow(QMainWindow):
         self.duplicate_post_shortcut.activated.connect(self.duplicate_item)
         self.tree.setAlternatingRowColors(True)
         self.tree.setUniformRowHeights(True)
-        self.tree.setHeaderLabels(["DÉSIGNATION", "CALCUL", "QTÉ", "DURÉE", "TAUX / PRIX HT", "POSTE SEUL HT", "TOTAL HT", ""])
-        self.tree.setColumnWidth(ACTION_COLUMN, 110)
-        self.tree.setColumnWidth(TOTAL_COLUMN, 115)
+        self.tree.setHeaderLabels(["DÉSIGNATION", "CALCUL", "QTÉ", "DURÉE SAISIE", "TOTAL HEURES", "TAUX / PRIX HT", "POSTE SEUL HT", "TOTAL HT", ""])
+        self.tree.setColumnWidth(ACTION_COLUMN, 100)
+        self.tree.setColumnWidth(TOTAL_COLUMN, 100)
         self.tree.setColumnWidth(0, 300)
-        self.tree.setColumnWidth(1, 80)
-        self.tree.setColumnWidth(2, 55)
-        self.tree.setColumnWidth(3, 115)
-        self.tree.setColumnWidth(4, 120)
-        self.tree.setColumnWidth(5, 115)
+        self.tree.setColumnWidth(1, 60)
+        self.tree.setColumnWidth(2, 40)
+        self.tree.setColumnWidth(3, 100)
+        self.tree.setColumnWidth(TOTAL_HOURS_COLUMN, 100)
+        self.tree.setColumnWidth(5, 105)
+        self.tree.setColumnWidth(POST_AMOUNT_COLUMN, 100)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        for column in (2, 3, 4, POST_AMOUNT_COLUMN, TOTAL_COLUMN):
+        for column in (2, 3, TOTAL_HOURS_COLUMN, 5, POST_AMOUNT_COLUMN, TOTAL_COLUMN):
             self.tree.headerItem().setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
+        self.tree.headerItem().setToolTip(3, "Durée propre saisie : par unité en mode horaire, charge totale en mode forfait.")
+        self.tree.headerItem().setToolTip(TOTAL_HOURS_COLUMN, "Temps du poste principal et de tous ses descendants, quantités comprises. Affiché uniquement au premier niveau.")
         self.tree.headerItem().setToolTip(POST_AMOUNT_COLUMN, "Montant propre à cette ligne, sans ses sous-postes.")
         self.tree.headerItem().setToolTip(TOTAL_COLUMN, "Total du poste principal et de tous ses descendants. Affiché uniquement au premier niveau.")
         self.tree.itemDoubleClicked.connect(lambda *_: self.edit_selected())
@@ -1738,20 +1742,24 @@ class MainWindow(QMainWindow):
         self.tree.clear()
         try:
             calculated = calculate(self.current) if self.current else {"lines": [], "works": []}
+            hours = {row["id"]: Decimal(row["hours"]) for row in calculated["lines"]}
             amounts = {row["id"]: row["ht_cents"] for row in calculated["lines"] + calculated["works"]}
         except DomainError:
             amounts = {}
+            hours = {}
             calculated = None
         work = next((work for work in works if work["id"] == self.active_work_id), None)
         self.update_work_summary(calculated)
         if work:
             principal_totals = principal_post_totals(work["items"], amounts)
+            principal_hours = principal_post_totals(work["items"], hours)
             nodes = {}
             for item in work["items"]:
                 hourly = item["mode"] == "hourly"
                 child = QTreeWidgetItem([item["label"], "Horaire" if hourly else "Forfait",
                                         str(item.get("quantity") or ""),
                                         duration_text(item.get("hours" if hourly else "estimated_hours"), item.get("duration_minutes" if hourly else "estimated_minutes")),
+                                        duration_text(principal_hours[item["id"]]) if item["id"] in principal_hours else "",
                                         str(item.get("rate" if hourly else "price") or ("Taux affaire" if hourly else "—")),
                                         money(amounts.get(item["id"], 0)),
                                         money(principal_totals[item["id"]]) if item["id"] in principal_totals else ""])
@@ -1763,7 +1771,7 @@ class MainWindow(QMainWindow):
                 if item.get("origin"):
                     evidence.append("Repris d’un ouvrage existant (origine conservée).")
                 child.setToolTip(0, "<qt>" + "<br>".join(html.escape(text) for text in evidence) + "</qt>")
-                for column in (2, 3, 4, POST_AMOUNT_COLUMN, TOTAL_COLUMN):
+                for column in (2, 3, TOTAL_HOURS_COLUMN, 5, POST_AMOUNT_COLUMN, TOTAL_COLUMN):
                     child.setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
                 nodes[item["id"]] = child
             for item in work["items"]:
@@ -1784,6 +1792,7 @@ class MainWindow(QMainWindow):
                     heading_font.setBold(True)
                     child.setFont(0, heading_font)
                     child.setFont(TOTAL_COLUMN, heading_font)
+                    child.setFont(TOTAL_HOURS_COLUMN, heading_font)
                 if item["id"] == selected_id:
                     self.tree.setCurrentItem(child)
             for ident, node in nodes.items():
