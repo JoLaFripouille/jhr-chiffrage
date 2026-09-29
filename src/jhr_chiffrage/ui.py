@@ -3,23 +3,24 @@ from __future__ import annotations
 
 import copy
 import logging
+import json
 import sys
 import uuid
 from pathlib import Path
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
-from PySide6.QtCore import Qt, QTimer, QThread, QPointF, Signal, QUrl
-from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPainter, QPen, QColor, QIcon, QPixmap, QPalette, QDesktopServices
+from PySide6.QtCore import Qt, QTimer, QThread, QPointF, Signal, QUrl, QMimeData
+from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPainter, QPen, QColor, QIcon, QPixmap, QPalette, QDesktopServices, QDrag
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSplitter, QTabWidget,
     QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QTabBar,
     QFrame, QSizePolicy, QHeaderView, QToolButton, QMenu, QSpinBox, QAbstractSpinBox,
-    QStyledItemDelegate, QStyleOptionViewItem, QStyle, QCompleter, QScrollArea,
+    QStyledItemDelegate, QStyleOptionViewItem, QStyle, QCompleter, QScrollArea, QAbstractItemView,
 )
 from . import __version__
-from .core import Store, calculate, DomainError, clone_items
+from .core import Store, calculate, DomainError, clone_items, move_item_branch
 from .theme import LIGHT_THEME
 from .connection import load_connection, save_connection, open_store, RemoteStore
 
@@ -27,6 +28,7 @@ from .connection import load_connection, save_connection, open_store, RemoteStor
 POST_AMOUNT_COLUMN = 5
 TOTAL_COLUMN = 6
 ACTION_COLUMN = 7
+POST_MIME = "application/x-jhr-post-branch"
 
 
 def uid():
@@ -159,6 +161,62 @@ def tree_nodes(tree):
         pending.extend(node.child(i) for i in reversed(range(node.childCount())))
 
 
+class WorkTabBar(QTabBar):
+    """Accept branch drops on a work tab without changing the tree mid-drag."""
+    def __init__(self):
+        super().__init__()
+        self.setAcceptDrops(True)
+        self.tree = None
+        self.drop_tab = -1
+
+    def candidate_move(self, event):
+        if self.tree is None:
+            return None
+        payload = self.tree.drag_payload_from(event)
+        index = self.tabAt(event.position().toPoint())
+        if payload is None or index < 0:
+            return None
+        request = (payload, self.tabData(index), None, "end")
+        return request if self.tree.can_move and self.tree.can_move(*request) else None
+
+    def dragEnterEvent(self, event):
+        self.dragMoveEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self.candidate_move(event):
+            self.drop_tab = self.tabAt(event.position().toPoint())
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+        else:
+            self.drop_tab = -1
+            event.ignore()
+        self.update()
+
+    def dragLeaveEvent(self, event):
+        self.drop_tab = -1
+        self.update()
+        event.accept()
+
+    def dropEvent(self, event):
+        request = self.candidate_move(event)
+        self.drop_tab = -1
+        self.update()
+        if request:
+            self.tree.pending_move = request
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.drop_tab >= 0:
+            painter = QPainter(self)
+            painter.setPen(QPen(QColor("#2563eb"), 2))
+            painter.drawRoundedRect(self.tabRect(self.drop_tab).adjusted(1, 1, -2, -2), 4, 4)
+            painter.end()
+
+
 class PostTree(QTreeWidget):
     addChildRequested = Signal(str)
     duplicateRequested = Signal(str)
@@ -167,6 +225,17 @@ class PostTree(QTreeWidget):
     def __init__(self):
         super().__init__()
         self.editable = False
+        self.drag_active = False
+        self.drag_context = None
+        self.pending_move = None
+        self.drop_preview = None
+        self.move_callback = None
+        self.can_move = None
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDrop)
+        self.setDefaultDropAction(Qt.MoveAction)
+        self.setAutoScroll(True)
         self.setItemDelegate(SubpostDelegate(self))
         self.hover_id = None
         self.setMouseTracking(True)
@@ -179,6 +248,114 @@ class PostTree(QTreeWidget):
         self.header().sectionResized.connect(self.hide_action)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.context_menu)
+
+    def startDrag(self, supported_actions):
+        item = self.currentItem()
+        if not self.editable or item is None or not self.drag_context:
+            return
+        self.hide_action()
+        self.drag_payload = dict(self.drag_context, item_id=item.data(0, Qt.UserRole))
+        mime = self.mimeData([item])
+        mime.setData(POST_MIME, json.dumps(self.drag_payload).encode())
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        self.drag_active = True
+        self.pending_move = None
+        try:
+            drag.exec(Qt.MoveAction)
+        finally:
+            # Rebuild only after Qt has finished its native drag operation.
+            self.drag_active = False
+            self.drop_preview = None
+            self.viewport().update()
+            pending, self.pending_move = self.pending_move, None
+            if pending and self.move_callback:
+                self.move_callback(*pending)
+
+    def drag_payload_from(self, event):
+        if not self.editable or event.source() is not self or not event.mimeData().hasFormat(POST_MIME):
+            return None
+        try:
+            payload = json.loads(bytes(event.mimeData().data(POST_MIME)))
+            if payload != getattr(self, "drag_payload", None):
+                return None
+            return payload
+        except (ValueError, TypeError):
+            return None
+
+    def drop_location(self, point):
+        item = self.itemAt(point)
+        if item is None:
+            return None, "end"
+        rect = self.visualItemRect(item)
+        margin = max(4, rect.height() // 4)
+        placement = "before" if point.y() < rect.top() + margin else "after" if point.y() > rect.bottom() - margin else "inside"
+        return item.data(0, Qt.UserRole), placement
+
+    def candidate_move(self, event):
+        payload = self.drag_payload_from(event)
+        if payload is None or not self.drag_context:
+            return None
+        target_id, placement = self.drop_location(event.position().toPoint())
+        request = (payload, self.drag_context["work_id"], target_id, placement)
+        return request if self.can_move and self.can_move(*request) else None
+
+    def dragEnterEvent(self, event):
+        if self.drag_payload_from(event):
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        self.hide_action()
+        request = self.candidate_move(event)
+        if request:
+            # Keep Qt's edge autoscroll; painting and mutation are our own.
+            super().dragMoveEvent(event)
+            self.drop_preview = (request[2], request[3])
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+        else:
+            self.drop_preview = None
+            event.ignore()
+        self.viewport().update()
+
+    def dragLeaveEvent(self, event):
+        self.drop_preview = None
+        self.viewport().update()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        request = self.candidate_move(event)
+        self.drop_preview = None
+        self.viewport().update()
+        if request:
+            self.pending_move = request
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.drop_preview is None:
+            return
+        ident, placement = self.drop_preview
+        painter = QPainter(self.viewport())
+        painter.setPen(QPen(QColor("#2563eb"), 2))
+        if placement == "end":
+            painter.drawRect(self.viewport().rect().adjusted(1, 1, -2, -2))
+        else:
+            node = next((n for n in tree_nodes(self) if n.data(0, Qt.UserRole) == ident), None)
+            if node is not None:
+                rect = self.visualItemRect(node)
+                if placement == "inside":
+                    painter.drawRect(rect.adjusted(1, 1, -2, -1))
+                else:
+                    y = rect.top() if placement == "before" else rect.bottom()
+                    painter.drawLine(rect.left(), y, rect.right(), y)
+        painter.end()
 
     def drawBranches(self, painter, rect, index):
         if index.parent().isValid():
@@ -208,7 +385,8 @@ class PostTree(QTreeWidget):
 
     def mouseMoveEvent(self, event):
         super().mouseMoveEvent(event)
-        self.show_action(self.itemAt(event.position().toPoint()))
+        if not self.drag_active:
+            self.show_action(self.itemAt(event.position().toPoint()))
 
     def leaveEvent(self, event):
         if not self.child_button.underMouse():
@@ -892,7 +1070,7 @@ class MainWindow(QMainWindow):
             if manual:
                 QMessageBox.information(self, "Modifications non enregistrées", "Enregistrez vos modifications avant de synchroniser.")
             return
-        if QApplication.activeModalWidget() and not manual:
+        if self.tree.drag_active or (QApplication.activeModalWidget() and not manual):
             return
         logging.getLogger(__name__).info("Synchronization begin manual=%s resolve=%s", manual, resolve)
         self.sync_worker = SyncWorker(self.store, resolve=resolve, parent=self)
@@ -1034,7 +1212,7 @@ class MainWindow(QMainWindow):
         browser.setSpacing(0)
         work_tabs_row = QHBoxLayout()
         work_tabs_row.setSpacing(4)
-        self.work_tabs = QTabBar()
+        self.work_tabs = WorkTabBar()
         self.work_tabs.setObjectName("workTabs")
         self.work_tabs.setDocumentMode(True)
         self.work_tabs.setDrawBase(False)
@@ -1067,6 +1245,10 @@ class MainWindow(QMainWindow):
         panel.setContentsMargins(14, 6, 14, 4)
         panel.setSpacing(4)
         self.tree = PostTree()
+        self.tree.move_callback = self.move_post
+        self.tree.can_move = self.can_move_post
+        self.work_tabs.tree = self.tree
+        self.tree.setToolTip("Glissez un poste entre deux lignes pour changer son ordre, sur une ligne pour l’imbriquer, ou sur un onglet pour changer d’ouvrage. Tous ses descendants suivent.")
         self.tree.setRootIsDecorated(True)
         self.tree.setIndentation(38)
         self.tree.addChildRequested.connect(self.add_sub_item)
@@ -1227,7 +1409,7 @@ class MainWindow(QMainWindow):
     def autosave_current(self):
         if not self.dirty or self.closing:
             return
-        if QApplication.activeModalWidget() or self.recovery_editor or self.sync_worker is not None:
+        if QApplication.activeModalWidget() or self.recovery_editor or self.sync_worker is not None or self.tree.drag_active:
             self.autosave_timer.start(500)
             return
         logging.getLogger(__name__).info("Automatic save begin")
@@ -1603,6 +1785,7 @@ class MainWindow(QMainWindow):
         self.tree.horizontalScrollBar().setValue(state.get('horizontal', 0))
         self.tree.setUpdatesEnabled(True)
         editable = bool(self.current and self.current["status"] == "draft")
+        self.tree.drag_context = {"estimate_id": self.current["id"], "work_id": self.active_work_id} if self.current else None
         self.tree.editable = editable
         for action in self.work_actions:
             action.setEnabled(editable and bool(work))
@@ -1702,6 +1885,35 @@ class MainWindow(QMainWindow):
         item_id = item.data(0, Qt.UserRole) if item else None
         ii = next((i for i, post in enumerate(works[wi]["items"]) if post["id"] == item_id), None) if wi is not None else None
         return wi, ii
+
+    def can_move_post(self, payload, target_work_id, target_id, placement):
+        if not self.current or self.current["status"] != "draft" or payload.get("estimate_id") != self.current["id"]:
+            return False
+        try:
+            move_item_branch(self.current["works"], payload["work_id"], payload["item_id"], target_work_id, target_id, placement)
+            return True
+        except (DomainError, KeyError, TypeError):
+            return False
+
+    def move_post(self, payload, target_work_id, target_id, placement):
+        if not self.can_move_post(payload, target_work_id, target_id, placement):
+            return
+        works = move_item_branch(self.current["works"], payload["work_id"], payload["item_id"], target_work_id, target_id, placement)
+        if works == self.current["works"]:
+            return
+        self.current["works"] = works
+        self.active_work_id = target_work_id
+        self.changed_tree()
+        for node in tree_nodes(self.tree):
+            if node.data(0, Qt.UserRole) == payload["item_id"]:
+                parent = node.parent()
+                while parent is not None:
+                    parent.setExpanded(True)
+                    parent = parent.parent()
+                self.tree.setCurrentItem(node)
+                self.tree.scrollToItem(node)
+                break
+        self.statusBar().showMessage("Poste déplacé avec tous ses descendants.", 5000)
 
     def changed_tree(self):
         self.mark_dirty()
@@ -1998,7 +2210,7 @@ class MainWindow(QMainWindow):
 
     def poll(self):
         self.update_sync_status()
-        if QApplication.activeModalWidget() or self.sync_worker is not None:
+        if QApplication.activeModalWidget() or self.sync_worker is not None or self.tree.drag_active:
             return
         try:
             if not self.dirty and not self.settings_dirty:

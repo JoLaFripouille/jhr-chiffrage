@@ -122,6 +122,67 @@ def validate_item_hierarchy(items):
         checked.update(path)
 
 
+def move_item_branch(works, source_work_id, item_id, target_work_id, target_id=None, placement="end"):
+    """Move a complete branch atomically, preserving all IDs and own prices."""
+    if placement not in {"before", "after", "inside", "end"}:
+        fail("Position de déplacement invalide.")
+    result = deepcopy(works)
+    by_work = {work["id"]: work for work in result}
+    if source_work_id not in by_work or target_work_id not in by_work:
+        fail("Ouvrage de déplacement introuvable.")
+    for work in result:
+        validate_item_hierarchy(work["items"])
+    source, target = by_work[source_work_id], by_work[target_work_id]
+    by_id = {item["id"]: item for item in source["items"]}
+    if item_id not in by_id:
+        fail("Poste à déplacer introuvable.")
+
+    def descendants(items, root):
+        children = {}
+        for item in items:
+            children.setdefault(item.get("parent_id"), []).append(item["id"])
+        branch, pending = [], [root]
+        while pending:
+            ident = pending.pop()
+            branch.append(ident)
+            pending.extend(reversed(children.get(ident, [])))
+        return branch
+
+    identifiers = descendants(source["items"], item_id)
+    branch_ids = set(identifiers)
+    if source is target and target_id in branch_ids:
+        fail("Impossible de déplacer un poste dans sa propre branche.")
+    branch = [by_id[ident] for ident in identifiers]
+    source["items"] = [item for item in source["items"] if item["id"] not in branch_ids]
+    if source is not target and branch_ids.intersection(item["id"] for item in target["items"]):
+        fail("Identifiants de postes déjà présents dans cet ouvrage.")
+    target_items = {item["id"]: item for item in target["items"]}
+    # Normalize to visual order so an insertion remains unambiguous even when
+    # stored children originally preceded their parents.
+    order = []
+    for item in target["items"]:
+        if item.get("parent_id") is None:
+            order.extend(descendants(target["items"], item["id"]))
+    ordered = [target_items[ident] for ident in order]
+    if placement == "end":
+        if target_id is not None:
+            fail("Destination invalide.")
+        parent, index = None, len(ordered)
+    else:
+        if target_id not in target_items:
+            fail("Poste de destination introuvable.")
+        destination = target_items[target_id]
+        parent = target_id if placement == "inside" else destination.get("parent_id")
+        index = order.index(target_id)
+        if placement in {"after", "inside"}:
+            index += len(descendants(ordered, target_id))
+    branch[0]["parent_id"] = parent
+    target["items"] = ordered[:index] + branch + ordered[index:]
+    validate_item_hierarchy(source["items"])
+    validate_item_hierarchy(target["items"])
+    return result
+
+
 def clone_items(items):
     """Copy a complete item forest with fresh identities and remapped parents."""
     validate_item_hierarchy(items)
