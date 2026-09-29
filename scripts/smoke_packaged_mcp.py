@@ -20,6 +20,8 @@ def payload(result):
 async def run(executable):
     with tempfile.TemporaryDirectory(prefix="jhr-mcp-exe-") as temporary, tempfile.TemporaryFile(mode="w+", encoding="utf-8") as error_log:
         environment = dict(os.environ)
+        for key in ("JHR_SERVER_URL", "JHR_SERVER_TOKEN", "JHR_SERVER_CA"):
+            environment.pop(key, None)
         environment.update(JHR_CHIFFRAGE_DB=str(Path(temporary) / "smoke.sqlite3"), JHR_MCP_ACCESS="draft")
         parameters = StdioServerParameters(command=str(executable), env=environment)
         async with stdio_client(parameters, errlog=error_log) as (read, write):
@@ -36,6 +38,17 @@ async def run(executable):
                 saved = payload(await session.call_tool("save_estimate", {"data": created, "expected_revision": created["revision"], "operation_id": str(uuid4())}))
                 assert saved["name"] == "EXE smoke saved"
                 assert saved["revision"] > created["revision"]
+                plan = payload(await session.call_tool("prepare_estimate_changes", {
+                    "estimate_id": saved["id"], "expected_revision": saved["revision"], "context": "Disposable CCTP workflow test",
+                    "changes": [
+                        {"action": "add_lot", "key": "@lot", "name": "LOT DEMO"},
+                        {"action": "add_ouvrage", "key": "@ouvrage", "lot_id": "@lot", "name": "C1"},
+                        {"action": "add_post", "lot_id": "@lot", "parent_id": "@ouvrage", "fields": {"label": "Coupe", "duration_minutes": 20, "cctp_reference": "Example chapter", "time_basis": "Estimated test"}},
+                    ]}))
+                applied = payload(await session.call_tool("apply_estimate_plan", {"plan_id": plan["plan_id"]}))
+                assert applied["saved"]
+                assert payload(await session.call_tool("apply_estimate_plan", {"plan_id": plan["plan_id"]})) == applied
+
         environment["JHR_MCP_ACCESS"] = "read"
         async with stdio_client(StdioServerParameters(command=str(executable), env=environment), errlog=error_log) as (read, write):
             async with ClientSession(read, write) as session:
@@ -47,7 +60,7 @@ async def run(executable):
         error_log.seek(0)
         diagnostics = error_log.read()
         assert "Traceback" not in diagnostics, diagnostics
-        print(json.dumps({"result": "PASS", "executable": str(executable), "sdk": capabilities["sdk_version"], "checks": ["initialize", "list_tools", "create", "read", "save", "read profile denies writes", "shutdown without traceback"], "database": "temporary, removed"}, ensure_ascii=False))
+        print(json.dumps({"result": "PASS", "executable": str(executable), "sdk": capabilities["sdk_version"], "checks": ["initialize", "list_tools", "create", "read", "save", "read profile denies writes", "CCTP plan prepare/apply/replay", "shutdown without traceback"], "database": "temporary, removed"}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

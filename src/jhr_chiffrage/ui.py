@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import logging
 import json
+import html
 import sys
 import uuid
 from pathlib import Path
@@ -1755,6 +1756,13 @@ class MainWindow(QMainWindow):
                                         money(amounts.get(item["id"], 0)),
                                         money(principal_totals[item["id"]]) if item["id"] in principal_totals else ""])
                 child.setData(0, Qt.UserRole, item["id"])
+                evidence = [item["label"]]
+                for field, title in (("cctp_reference", "CCTP"), ("time_basis", "Estimation du temps"), ("notes", "Notes")):
+                    if item.get(field):
+                        evidence.append(f"{title} : {item[field]}")
+                if item.get("origin"):
+                    evidence.append("Repris d’un ouvrage existant (origine conservée).")
+                child.setToolTip(0, "<qt>" + "<br>".join(html.escape(text) for text in evidence) + "</qt>")
                 for column in (2, 3, 4, POST_AMOUNT_COLUMN, TOTAL_COLUMN):
                     child.setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
                 nodes[item["id"]] = child

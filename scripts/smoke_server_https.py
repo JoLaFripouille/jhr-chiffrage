@@ -129,6 +129,20 @@ def main():
                 assert any(obj["kind"] == "designation" for obj in second.sync_snapshot()["objects"])
                 second.save_designation(dict(designation, active=False), designation["revision"])
                 assert offline.synchronize() and not offline.list_designations()
+                from jhr_chiffrage.agent_workflow import AgentPlans, Change
+                target = offline.create_estimate("Temporary agent workflow")
+                plans = AgentPlans(offline)
+                plan = plans.prepare(target["id"], target["revision"], [
+                    Change(action="add_lot", key="@lot", name="LOT TEST"),
+                    Change(action="add_ouvrage", key="@ouvrage", lot_id="@lot", name="C1", fields={"cctp_reference": "Example section 2.3"}),
+                    Change(action="add_post", lot_id="@lot", parent_id="@ouvrage", fields={"label": "Dessin", "duration_minutes": 20, "time_basis": "Estimated from example"}),
+                ], "Temporary CCTP example")
+                saved_plan = plans.apply(plan["plan_id"])
+                assert saved_plan["pending"] > 0
+                assert offline.synchronize()
+                received = second.get_estimate(target["id"])
+                assert received["works"][0]["items"][0]["cctp_reference"] == "Example section 2.3"
+                assert received["works"][0]["items"][1]["time_basis"] == "Estimated from example"
                 print("PASS: real HTTPS, certificate verification, authorization, two clients, revisions, idempotency, backup, offline restart/edit/sync, conflict copies")
             finally:
                 if offline is not None:

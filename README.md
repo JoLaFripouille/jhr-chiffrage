@@ -77,3 +77,56 @@ Les affaires et les paramètres en cours de modification sont copiés automatiqu
 Dans **Paramètres → Enregistrement automatique des affaires**, activer indépendamment l’enregistrement après modification d’un poste/ouvrage et l’enregistrement après une pause dans la saisie (5 à 3 600 secondes). Le délai repart après chaque modification ; aucune écriture n’est déclenchée sans changement. La saisie d’un poste doit être validée avant l’enregistrement normal. En cas de conflit ou de valeur invalide, le brouillon et sa copie de secours sont conservés pour correction ; aucune version distante n’est écrasée. Ces réglages sont propres au PC et à la connexion utilisée.
 
 Pour déplacer un poste et tous ses descendants, le glisser **entre deux lignes** (changer l’ordre), **sur une ligne** (devenir son sous-poste), ou **dans l’espace vide du tableau** (revenir au premier niveau, en fin de liste). Le repère bleu indique la destination. Déposer sur **l’onglet d’un autre ouvrage** transfère la branche complète dans cet ouvrage de la même affaire. Les montants propres sont conservés ; les totaux des parents se recalculent. Les déplacements suivent les réglages d’enregistrement automatique et bénéficient de la copie de secours. Les versions figées et les déplacements dans sa propre descendance sont protégés.
+
+## Adapter un chiffrage au CCTP avec un agent
+
+L’organisation prise en charge est **Affaire → Lots (onglets) → Ouvrages (postes principaux) → Vues/postes → Sous-postes**. Les données existantes restent compatibles : `works` désigne les onglets/lots et `items` les ouvrages et leurs descendants.
+
+L’agent lit le CCTP avec ses propres outils documentaires, puis utilise :
+
+1. `get_agent_workflow` et `get_estimate_outline` : conventions, arborescence, montants propres/cumulés et révision actuelle.
+2. `search_reusable_ouvrages` : trouver un lot, un ouvrage ou une branche existante à réutiliser.
+3. `prepare_estimate_changes` : préparer des ajouts, copies, adaptations, déplacements et suppressions sans enregistrer l’affaire. Le résultat contient un aperçu détaillé, les totaux avant/après et un `plan_id`.
+4. `apply_estimate_plan` : appliquer le plan autorisé en une seule révision. Réappliquer le même plan ne duplique rien. Une révision périmée ou du travail humain non enregistré sur le même PC bloque l’application.
+5. `synchronize`, puis `get_sync_status` : vérifier le partage effectif avec le serveur.
+
+Les actions disponibles sont `add_lot`, `rename_lot`, `copy_lot`, `add_ouvrage`, `add_post`, `copy_ouvrage`, `update_post`, `move_post`, `remove_post` et `remove_lot`. Une suppression de poste inclut ses descendants et figure dans l’aperçu.
+
+Une création peut recevoir une référence temporaire, par exemple `key: "@lot"` ou `key: "@chassis"`, utilisable dans les actions suivantes. Après une copie portant `key: "@chassis"`, `@chassis/IDENTIFIANT_DU_POSTE_SOURCE` désigne le poste copié correspondant. Les copies exigent l’identifiant et la révision de l’affaire source. `copy_ouvrage` sans `source.item_id` reprend un ancien onglet entier comme ouvrage principal dans le lot cible.
+
+Exemple de préparation (identifiants et révision à remplacer par ceux lus via le MCP) :
+
+```json
+{
+  "estimate_id": "IDENTIFIANT_AFFAIRE",
+  "expected_revision": 1,
+  "context": "Préparer le lot serrurerie d’après le CCTP fourni ; temps à vérifier.",
+  "changes": [
+    {"action": "add_lot", "key": "@lot", "name": "LOT Serrurerie"},
+    {"action": "add_ouvrage", "key": "@ouvrage", "lot_id": "@lot", "name": "C1 — Châssis"},
+    {"action": "add_post", "key": "@coupe", "lot_id": "@lot", "parent_id": "@ouvrage", "fields": {"label": "Coupe verticale", "duration_minutes": 20, "cctp_reference": "CCTP fourni, chapitre et page à préciser", "time_basis": "Hypothèse de temps de dessin à confirmer"}},
+    {"action": "add_post", "lot_id": "@lot", "parent_id": "@coupe", "fields": {"label": "Cotation + labels", "duration_minutes": 10, "time_basis": "Hypothèse de cotation à confirmer"}}
+  ]
+}
+```
+
+Les références au CCTP, hypothèses de temps et origines de copie sont conservées sur les postes ; elles apparaissent au survol de la désignation dans l’application. Les taux de l’affaire cible sont conservés. La copie d’un temps n’établit pas sa pertinence pour le nouveau CCTP : l’agent doit justifier les adaptations, signaler les données manquantes et distinguer plans EXE/FAB et validation structure par un BE.
+
+### Raccorder un agent
+
+Choisir le transport **stdio** et le profil `JHR_MCP_ACCESS=draft` pour préparer et modifier des brouillons sans modifier les paramètres fiscaux ni figer les versions. La connexion au serveur métier est reprise depuis la configuration privée de l’application ; ne pas placer le jeton ni le certificat privé dans le dépôt.
+
+Exemple générique pour les agents utilisant un fichier `mcpServers` :
+
+```json
+{
+  "mcpServers": {
+    "jhr_chiffrage": {
+      "command": "CHEMIN_ABSOLU_VERS_JHRChiffrageMCP.exe",
+      "env": {"JHR_MCP_ACCESS": "draft"}
+    }
+  }
+}
+```
+
+Sur Ubuntu, remplacer la commande par le chemin absolu vers `~/.local/bin/jhr-chiffrage-mcp`. Pour Codex, la même commande et le même environnement se configurent dans la table `[mcp_servers.jhr_chiffrage]` de sa configuration locale. Relancer/recharger le client MCP après changement. L’agent doit avoir accès aux documents que vous souhaitez faire analyser ; le MCP de chiffrage ne parcourt pas les PDF lui-même.
