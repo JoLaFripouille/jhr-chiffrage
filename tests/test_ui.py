@@ -108,6 +108,37 @@ def test_frozen_subposts_cannot_be_added(window, app):
     assert len(window.current["works"][0]["items"]) == 1
 
 
+@pytest.mark.parametrize('target_child,accept', [(False, True), (True, True), (True, False)])
+def test_context_delete_targets_clicked_branch(window, app, monkeypatch, target_child, accept):
+    from jhr_chiffrage.core import new_item
+    from PySide6.QtWidgets import QMenu
+    root, child, other = [new_item(name) for name in ('Parent', 'Enfant', 'Autre')]
+    child['parent_id'] = root['id']
+    window.current = window.store.create_estimate('Suppression')
+    window.current['works'] = [{'id': uid(), 'name': 'Ouvrage', 'items': [root, child, other]}]
+    window.render()
+    window.show()
+    app.processEvents()
+    tree = window.tree
+    tree.setCurrentItem(tree.topLevelItem(1))  # Deliberately select another row.
+    target = tree.topLevelItem(0).child(0) if target_child else tree.topLevelItem(0)
+    messages = []
+    def confirm(*args):
+        messages.append(args[2])
+        return QMessageBox.Yes if accept else QMessageBox.No
+    monkeypatch.setattr(QMessageBox, 'question', confirm)
+    class TestMenu(QMenu):
+        def exec(self, point):
+            next(action for action in self.actions() if action.text() == 'Supprimer le poste').trigger()
+    monkeypatch.setattr(ui, 'QMenu', TestMenu)
+    tree.context_menu(tree.visualItemRect(target).center())
+    ids = [item['id'] for item in window.current['works'][0]['items']]
+    expected = [root['id'], other['id']] if target_child else [other['id']]
+    assert ids == (expected if accept else [root['id'], child['id'], other['id']])
+    assert window.dirty == accept
+    assert bool('1 sous-poste' in messages[0]) == (not target_child)
+
+
 def test_edit_subpost_dialog_preserves_parent(app):
     from jhr_chiffrage.core import new_item
     item = new_item("Détail")

@@ -75,6 +75,7 @@ class SubpostDelegate(QStyledItemDelegate):
 class PostTree(QTreeWidget):
     addChildRequested = Signal(str)
     duplicateRequested = Signal(str)
+    removeRequested = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -135,6 +136,8 @@ class PostTree(QTreeWidget):
         menu = QMenu(self)
         menu.addAction("Ajouter un sous-poste", lambda: self.addChildRequested.emit(item_id))
         menu.addAction("Dupliquer le poste et ses sous-postes", lambda: self.duplicateRequested.emit(item_id))
+        menu.addSeparator()
+        menu.addAction("Supprimer le poste", lambda: self.removeRequested.emit(item_id))
         menu.exec(self.viewport().mapToGlobal(point))
 
 
@@ -839,6 +842,7 @@ class MainWindow(QMainWindow):
         self.tree.setIndentation(38)
         self.tree.addChildRequested.connect(self.add_sub_item)
         self.tree.duplicateRequested.connect(self.duplicate_item)
+        self.tree.removeRequested.connect(self.remove_item)
         self.duplicate_post_shortcut = QShortcut(QKeySequence("Ctrl+D"), self.tree)
         self.duplicate_post_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self.duplicate_post_shortcut.activated.connect(self.duplicate_item)
@@ -1427,13 +1431,20 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Poste et sous-postes dupliqués. Pensez à enregistrer.", 5000)
 
     def remove_selected(self):
+        item = self.tree.currentItem()
+        if item is not None:
+            self.remove_item(item.data(0, Qt.UserRole))
+
+    def remove_item(self, item_id):
         if not self.current or self.current["status"] != "draft":
             return
-        wi, ii = self.selection()
-        if wi is None or ii is None:
+        wi, _ = self.selection()
+        if wi is None:
             return
         items = self.current["works"][wi]["items"]
-        removed = descendant_ids(items, items[ii]["id"])
+        if not any(item['id'] == item_id for item in items):
+            return
+        removed = descendant_ids(items, item_id)
         message = f"Retirer ce poste et ses {len(removed) - 1} sous-poste(s) de l’affaire ?" if len(removed) > 1 else "Retirer ce poste de l’affaire ?"
         if QMessageBox.question(self, "Retirer", message) != QMessageBox.Yes:
             return
