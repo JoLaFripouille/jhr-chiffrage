@@ -36,3 +36,5 @@ Autoriser le port choisi dans le pare-feu, uniquement depuis le sous-réseau loc
 Le PC hôte doit rester allumé, connecté et hors veille. Un démarrage avec la session utilisateur exige l'ouverture de cette session. Le premier jet n'est pas un service système installé avant connexion. Pour un accès extérieur ultérieur, prévoir un VPN ou une architecture d'hébergement adaptée.
 
 La clé actuelle donne les droits complets aux clients autorisés. Il n'y a pas encore de comptes individuels ni de droits par personne. Pour révoquer un client, changer la clé serveur et la mettre à jour sur les clients conservés. Les profils MCP continuent de limiter les opérations exposées à l'agent.
+
+Depuis la version 0.4.0, les désignations fréquentes sont également synchronisées et disponibles hors ligne. Mettre à jour le serveur avant les clients 0.4.0. Les anciens clients restent compatibles avec le serveur mis à jour, sans accès à cette nouvelle bibliothèque.

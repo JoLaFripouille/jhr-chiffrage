@@ -91,7 +91,7 @@ class OfflineStore(Store):
             raise DomainError('CONNECTION_ERROR', 'Copie du serveur incomplète.')
         keys = set()
         for obj in objects:
-            if not isinstance(obj, dict) or obj.get('kind') not in ('estimate', 'template', 'settings') or not isinstance(obj.get('id'), str) or not isinstance(obj.get('body'), dict):
+            if not isinstance(obj, dict) or obj.get('kind') not in ('estimate', 'template', 'settings', 'designation') or not isinstance(obj.get('id'), str) or not isinstance(obj.get('body'), dict):
                 raise DomainError('CONNECTION_ERROR', 'Copie du serveur invalide.')
             key = (obj['kind'], obj['id'])
             if key in keys or type(obj['body'].get('revision')) is not int:
@@ -217,7 +217,9 @@ class OfflineStore(Store):
                     if change['kind'] == 'settings':
                         continue  # Preserved in full backup and estimate settings snapshots.
                     obj = deepcopy(change['body'])
-                    obj.update(id=str(uuid4()), revision=1, name=obj['name'] + ' (copie hors ligne)')
+                    obj.update(id=str(uuid4()), revision=1)
+                    if change['kind'] != 'designation':
+                        obj['name'] += ' (copie hors ligne)'
                     if change['kind'] == 'estimate':
                         obj.update(status='draft', version=1, parent_id=None, updated_at=now())
                         for key in ('root_id', 'frozen_at', 'frozen_totals', 'calculation_version'):

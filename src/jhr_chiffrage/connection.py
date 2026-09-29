@@ -144,7 +144,7 @@ class RemoteStore:
         return self._call("get_settings")
 
     def sync_snapshot(self):
-        return self._call("sync_snapshot")
+        return self._call("sync_snapshot", {"include_designations": True})
 
     def sync_push(self, changes, operation_id):
         return self._call("sync_push", dict(changes=changes, operation_id=operation_id), mutation=True)
@@ -172,6 +172,12 @@ class RemoteStore:
 
     def refresh_estimate_settings(self, id, expected_revision, actor="ui", operation_id=None):
         return self._call("refresh_estimate_settings", dict(id=id, expected_revision=expected_revision, actor=actor, operation_id=operation_id), mutation=True)
+
+    def list_designations(self):
+        return self._call("list_designations")
+
+    def save_designation(self, data, expected_revision=None, actor="ui", operation_id=None):
+        return self._call("save_designation", dict(data=data, expected_revision=expected_revision, actor=actor, operation_id=operation_id), mutation=True)
 
     def list_templates(self):
         return self._call("list_templates")

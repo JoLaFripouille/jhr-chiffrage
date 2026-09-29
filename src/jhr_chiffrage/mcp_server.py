@@ -73,6 +73,13 @@ class EstimateData(InputModel):
     calculation_version: int | None = None
 
 
+class DesignationData(InputModel):
+    id: str | None = None
+    revision: int | None = None
+    name: str = Field(min_length=1, max_length=300)
+    active: bool = True
+
+
 class TemplateData(InputModel):
     id: str | None = None
     revision: int | None = None
@@ -147,6 +154,11 @@ def build_server(store: Store | None = None, access: str | None = None) -> FastM
         return database.get_estimate(estimate_id)
 
     @tool
+    def list_designations() -> list[dict]:
+        """Read saved active item designations for autocomplete."""
+        return database.list_designations()
+
+    @tool
     def list_templates() -> list[dict]:
         """Read reusable templates; applying one makes an independent copy."""
         return database.list_templates()
@@ -215,6 +227,14 @@ def build_server(store: Store | None = None, access: str | None = None) -> FastM
             """Save a draft atomically; stale revisions and frozen versions are rejected."""
             return database.save_estimate(data.model_dump(exclude_none=True), expected_revision,
                                           actor="mcp", operation_id=operation_id)
+
+        @tool
+        def save_designation(data: DesignationData, expected_revision: Revision | None, operation_id: OperationId) -> dict:
+            """Save a reusable name; active=false removes it from suggestions, never from estimates."""
+            if bool(data.id) != (expected_revision is not None):
+                raise ToolError("VALIDATION_ERROR: provide the observed revision only when updating an existing designation")
+            return database.save_designation(data.model_dump(exclude_none=True), expected_revision,
+                                             actor="mcp", operation_id=operation_id)
 
         @tool
         def save_template(data: TemplateData, expected_revision: Revision | None, operation_id: OperationId) -> dict:

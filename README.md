@@ -4,6 +4,10 @@ Application de bureau native pour chiffrer les études et dessins : affaires, ou
 
 Pour dupliquer un ouvrage, faire un clic droit sur son onglet puis **Dupliquer cet ouvrage**. Pour un poste et ses sous-postes, faire un clic droit sur sa ligne puis **Dupliquer le poste et ses sous-postes**, ou sélectionner la ligne et utiliser **Ctrl+D**. Les copies sont indépendantes et restent dans le brouillon ; cliquer sur **Enregistrer** pour les conserver et les synchroniser.
 
+Dans la fenêtre d'un poste ou sous-poste, saisir une désignation puis cliquer sur **Mémoriser** pour la retrouver dans les suggestions lors des prochaines saisies. Sélectionner une suggestion au clavier ou à la souris ; seules les lettres de la désignation sont reprises, sans changer les heures ni le tarif. **Paramètres → Désignations fréquentes…** permet d'ajouter ou retirer des suggestions sans modifier les postes existants. La bibliothèque reste disponible hors ligne et se synchronise en mode serveur (serveur et clients 0.4.0 ou ultérieurs pour cette fonction).
+
+Le bas fixe du tableau affiche le total des heures et le total HT de l'ouvrage actif, postes et sous-postes compris, même pendant le défilement.
+
 ## Installer sur Ubuntu
 
 Python 3.11 minimum, module venv, Git et Internet requis. Ubuntu 24.04 fournit Python 3.12 ; le Python 3.10 d'Ubuntu 22.04 est trop ancien. L'installateur indique les bibliothèques graphiques manquantes et n'installe aucun paquet système automatiquement.

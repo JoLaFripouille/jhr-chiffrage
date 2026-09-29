@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSplitter, QTabWidget,
     QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QTabBar,
     QFrame, QSizePolicy, QHeaderView, QToolButton, QMenu, QSpinBox, QAbstractSpinBox, QTreeWidgetItemIterator,
-    QStyledItemDelegate, QStyleOptionViewItem, QStyle,
+    QStyledItemDelegate, QStyleOptionViewItem, QStyle, QCompleter,
 )
 from . import __version__
 from .core import Store, calculate, DomainError, clone_items
@@ -307,8 +307,13 @@ class CalculationComboBox(QComboBox):
 
 
 class ItemDialog(QDialog):
-    def __init__(self, item=None, parent=None):
+    def __init__(self, item=None, parent=None, store=None):
         super().__init__(parent)
+        self.store = store
+        ancestor = parent
+        while self.store is None and ancestor is not None:
+            self.store = getattr(ancestor, 'store', None)
+            ancestor = ancestor.parent()
         self.setWindowTitle("Poste de chiffrage")
         self.setMinimumWidth(560)
         self.original = copy.deepcopy(item or {})
@@ -319,11 +324,29 @@ class ItemDialog(QDialog):
         form.setVerticalSpacing(12)
         form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.label = QLineEdit(self.original.get("label", ""))
+        self.label.setPlaceholderText("Ex. cotation + label")
+        self.label_completer = QCompleter([], self)
+        self.label_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.label_completer.setFilterMode(Qt.MatchContains)
+        self.label_completer.setCompletionMode(QCompleter.PopupCompletion)
+        self.label_completer.setMaxVisibleItems(8)
+        self.label.setCompleter(self.label_completer)
+        designation_row = QHBoxLayout()
+        designation_row.addWidget(self.label, 1)
+        self.remember_button = QPushButton("Mémoriser")
+        self.remember_button.setToolTip("Enregistrer cette désignation dans les suggestions, sans les heures ni le prix")
+        self.remember_button.clicked.connect(self.remember_designation)
+        designation_row.addWidget(self.remember_button)
+        self.designation_notice = label("", "subtle")
+        self.designation_notice.setWordWrap(True)
+        self.saved_names = []
+        self.refresh_designations()
+        self.label.textChanged.connect(self.update_remember_button)
         self.mode = CalculationComboBox()
         self.mode.addItem("Temps × quantité × taux horaire", "hourly")
         self.mode.addItem("Prix forfaitaire × quantité", "fixed")
         self.mode.setCurrentIndex(1 if self.original.get("mode") == "fixed" else 0)
-        form.addRow("Désignation", self.label)
+        form.addRow("Désignation", designation_row)
         form.addRow("Calcul", self.mode)
         self.fields = {}
         for key, title, placeholder in [
@@ -342,6 +365,7 @@ class ItemDialog(QDialog):
         self.hint = label("", "subtle")
         self.hint.setWordWrap(True)
         form.addRow(self.hint)
+        form.addRow(self.designation_notice)
         self.mode.currentIndexChanged.connect(self.update_mode)
         self.update_mode()
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -352,6 +376,30 @@ class ItemDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
         self.adjustSize()
+
+    def refresh_designations(self):
+        try:
+            self.saved_names = [item['name'] for item in self.store.list_designations()] if self.store else []
+            self.label_completer.model().setStringList(self.saved_names)
+        except (DomainError, OSError) as exc:
+            self.designation_notice.setText(f"Suggestions indisponibles : {exc}")
+        self.update_remember_button()
+
+    def update_remember_button(self, *_):
+        name = self.label.text().strip()
+        saved = name.casefold() in {value.casefold() for value in self.saved_names}
+        self.remember_button.setEnabled(self.store is not None and bool(name) and not saved)
+        self.remember_button.setText("Mémorisée" if saved else "Mémoriser")
+
+    def remember_designation(self):
+        if self.store is None:
+            return
+        try:
+            self.store.save_designation({'name': self.label.text().strip(), 'active': True})
+            self.refresh_designations()
+            self.designation_notice.setText("Désignation mémorisée : elle sera proposée lors des prochaines saisies.")
+        except (DomainError, OSError) as exc:
+            self.designation_notice.setText(str(exc))
 
     def update_mode(self):
         hourly = self.mode.currentData() == "hourly"
@@ -389,6 +437,67 @@ class ItemDialog(QDialog):
             QMessageBox.warning(self, "Valeur à corriger", str(exc))
             return
         self.accept()
+
+
+class DesignationsDialog(QDialog):
+    def __init__(self, store, parent=None):
+        super().__init__(parent)
+        self.store = store
+        self.setWindowTitle("Désignations fréquentes")
+        self.resize(580, 420)
+        layout = QVBoxLayout(self)
+        explanation = QLabel("Ces désignations sont proposées à la saisie des postes et sous-postes.\nElles ne contiennent ni durée ni tarif.")
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        self.names = QListWidget()
+        layout.addWidget(self.names, 1)
+        row = QHBoxLayout()
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("Ex. cotation + label")
+        row.addWidget(self.name, 1)
+        button("Ajouter", self.add_name, row)
+        layout.addLayout(row)
+        self.message = label("", "subtle")
+        self.message.setWordWrap(True)
+        layout.addWidget(self.message)
+        actions = QHBoxLayout()
+        self.remove_button = button("Retirer des suggestions", self.remove_name, actions)
+        actions.addStretch()
+        button("Fermer", self.accept, actions)
+        layout.addLayout(actions)
+        self.name.returnPressed.connect(self.add_name)
+        self.names.currentRowChanged.connect(lambda _: self.remove_button.setEnabled(self.names.currentItem() is not None))
+        self.refresh()
+
+    def refresh(self):
+        self.names.clear()
+        for designation in self.store.list_designations():
+            item = QListWidgetItem(designation['name'])
+            item.setData(Qt.UserRole, designation)
+            self.names.addItem(item)
+        self.remove_button.setEnabled(False)
+
+    def add_name(self):
+        try:
+            self.store.save_designation({'name': self.name.text().strip(), 'active': True})
+            self.name.clear()
+            self.refresh()
+            self.message.setText("Désignation mémorisée.")
+        except (DomainError, OSError) as exc:
+            self.message.setText(str(exc))
+
+    def remove_name(self):
+        item = self.names.currentItem()
+        if item is None:
+            return
+        data = copy.deepcopy(item.data(Qt.UserRole))
+        try:
+            data['active'] = False
+            self.store.save_designation(data, data['revision'])
+            self.refresh()
+            self.message.setText("Retirée des suggestions. Les postes déjà saisis sont conservés.")
+        except (DomainError, OSError) as exc:
+            self.message.setText(str(exc))
 
 
 class TemplateDialog(QDialog):
@@ -928,6 +1037,7 @@ class MainWindow(QMainWindow):
         form.addRow(self.vat_enabled)
         layout.addLayout(form)
         button("Enregistrer les paramètres", self.save_settings, layout)
+        button("Désignations fréquentes…", self.manage_designations, layout)
         button("Créer une sauvegarde des données", self.backup, layout)
         connection_label = QLabel("Connexion actuelle : serveur avec copie hors ligne sur ce PC" if self.sync_enabled else "Connexion actuelle : serveur partagé" if isinstance(self.store, RemoteStore) else "Connexion actuelle : cet ordinateur")
         layout.addWidget(connection_label)
@@ -949,11 +1059,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.history)
         self.tabs.addTab(page, "Historique")
 
+    def manage_designations(self):
+        try:
+            DesignationsDialog(self.store, self).exec()
+        except (DomainError, OSError) as exc:
+            self.error(exc)
+
     def refresh_history(self):
         labels = {"save_settings": "Paramètres enregistrés", "create_estimate": "Affaire créée",
                   "save_estimate": "Affaire enregistrée", "freeze_estimate": "Version figée",
                   "revise_estimate": "Nouvelle version créée", "refresh_estimate_settings": "Paramètres appliqués au brouillon",
-                  "save_template": "Gabarit enregistré", "apply_template": "Gabarit ajouté à une affaire"}
+                  "save_template": "Gabarit enregistré", "apply_template": "Gabarit ajouté à une affaire",
+                  "save_designation": "Désignation fréquente enregistrée"}
         events = self.store.list_changes()
         signature = [(e.get('seq'), e.get('at'), e.get('actor'), e.get('operation')) for e in events]
         if signature == getattr(self, '_history_signature', None):
@@ -1172,10 +1289,9 @@ class MainWindow(QMainWindow):
             amounts = {row["id"]: row["ht_cents"] for row in calculated["lines"] + calculated["works"]}
         except DomainError:
             amounts = {}
+            calculated = None
         work = next((work for work in works if work["id"] == self.active_work_id), None)
-        self.work_summary.setText(
-            f"{work['name']} • {len(work['items'])} poste(s) • Total ouvrage HT : {money(amounts.get(work['id'], 0))}"
-            if work else "Ajoutez un ouvrage avec le bouton +.")
+        self.update_work_summary(calculated)
         if work:
             nodes = {}
             for item in work["items"]:
@@ -1259,6 +1375,20 @@ class MainWindow(QMainWindow):
         self.active_work_id = remaining[min(wi, len(remaining) - 1)]["id"] if remaining else None
         self.changed_tree()
 
+    def update_work_summary(self, result=None):
+        work = next((work for work in (self.current or {}).get('works', []) if work['id'] == self.active_work_id), None)
+        if work is None:
+            self.work_summary.setText("Ajoutez un ouvrage avec le bouton +.")
+            return
+        try:
+            result = result if result is not None else calculate(self.collect())
+            totals = next(row for row in result['works'] if row['id'] == work['id'])
+            self.work_summary.setText(f"Total ouvrage : {duration_text(totals['hours'])}  ·  {money(totals['ht_cents'])} HT")
+            self.work_summary.setToolTip(f"{work['name']} · {len(work['items'])} poste(s), sous-postes compris.\nSomme des durées et des montants HT ; les charges renseignées pour les forfaits sont incluses."
+                                         + ("\nChiffrage incomplet : voir les indications sous la synthèse." if result['incomplete'] else ""))
+        except (DomainError, StopIteration):
+            self.work_summary.setText("Total ouvrage : à vérifier")
+
     def update_totals(self):
         if not self.current:
             self.totals.setText("Créez une affaire pour commencer votre chiffrage.")
@@ -1269,6 +1399,7 @@ class MainWindow(QMainWindow):
                                  + (" • MODIFICATIONS NON ENREGISTRÉES" if self.dirty else ""))
         try:
             result = calculate(self.collect())
+            self.update_work_summary(result)
             values = [("HT", "ht_cents"), ("TVA", "vat_cents"), ("TTC", "ttc_cents"),
                       ("Prélèvements estimés", "levy_cents"), ("Solde après prélèvements", "balance_cents")]
             text = "   |   ".join(f"{label} : {money(result[key])}" for label, key in values)
@@ -1285,6 +1416,7 @@ class MainWindow(QMainWindow):
             self.totals.setText(text)
             self.totals.display(result, settings)
         except DomainError as exc:
+            self.work_summary.setText("Total ouvrage : à vérifier")
             self.totals.setText(f"Chiffrage à corriger : {exc}")
             self.totals.warning.setText(f"Chiffrage à corriger : {exc}")
             self.totals.warning.show()

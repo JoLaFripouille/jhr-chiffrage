@@ -42,10 +42,15 @@ def build_app(store: Store, token: str) -> Starlette:
         target = Path(store.export_estimate(id, kind))
         return {"filename": target.name, "content": target.read_text(encoding="utf-8")}
 
+    def sync_snapshot(include_designations=False):
+        # Old clients only understand estimates/templates/settings. They must
+        # still be able to work after a newer client saves its first designation.
+        return store.sync_snapshot(include_designations=include_designations)
+
     # Deliberately explicit: new Store methods never become remotely callable by accident.
     methods = {
         "get_settings": store.get_settings,
-        "sync_snapshot": store.sync_snapshot,
+        "sync_snapshot": sync_snapshot,
         "sync_push": store.sync_push,
         "save_settings": store.save_settings,
         "list_estimates": store.list_estimates,
@@ -55,6 +60,8 @@ def build_app(store: Store, token: str) -> Starlette:
         "freeze_estimate": store.freeze_estimate,
         "revise_estimate": store.revise_estimate,
         "refresh_estimate_settings": store.refresh_estimate_settings,
+        "list_designations": store.list_designations,
+        "save_designation": store.save_designation,
         "list_templates": store.list_templates,
         "save_template": store.save_template,
         "apply_template": store.apply_template,

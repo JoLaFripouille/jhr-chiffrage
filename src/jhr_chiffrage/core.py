@@ -316,12 +316,16 @@ class Store:
         with self.connection() as db:
             return self._get(db, "settings", "default")
 
-    def sync_snapshot(self):
+    def sync_snapshot(self, include_designations=True):
         """One consistent read, including all object types needed while offline."""
+        if type(include_designations) is not bool:
+            fail("Option de synchronisation invalide.")
         with self.connection() as db:
             db.execute("BEGIN")
             objects = [{"kind": row[0], "id": row[1], "body": json.loads(row[2])}
                        for row in db.execute("SELECT kind,id,body FROM objects ORDER BY kind,id")]
+        if not include_designations:
+            objects = [obj for obj in objects if obj['kind'] != 'designation']
         return {"offline_sync_version": 1, "objects": objects}
 
     def sync_push(self, changes, actor="ui", operation_id=None):
@@ -337,7 +341,7 @@ class Store:
                 if not isinstance(change, dict) or set(change) != {"kind", "id", "base", "body"}:
                     fail("Objet de synchronisation invalide.")
                 kind, ident, base, body = (change[k] for k in ("kind", "id", "base", "body"))
-                if kind not in ("settings", "template", "estimate") or not isinstance(ident, str):
+                if kind not in ("settings", "template", "estimate", "designation") or not isinstance(ident, str):
                     fail("Type ou identifiant de synchronisation invalide.")
                 key = (kind, ident)
                 if key in pending or not isinstance(body, dict) or (base is not None and not isinstance(base, dict)):
@@ -378,6 +382,11 @@ class Store:
             if set(body) != set(DEFAULT_SETTINGS):
                 fail("Champs des paramètres invalides.")
             checked_settings(body)
+            return
+        if kind == "designation":
+            if set(body) != {"id", "revision", "name", "active"}:
+                fail("Champs de la désignation invalides.")
+            self._validate_designation(body)
             return
         if kind == "template":
             if set(body) != {"id", "revision", "name", "description", "items"}:
@@ -523,6 +532,47 @@ class Store:
             self._put(db, "estimate", id, new)
             return old, new
         return self._mutation("refresh_estimate_settings", [id, expected_revision], actor, operation_id, refresh)
+
+    @staticmethod
+    def _validate_designation(data):
+        name = data.get("name")
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 300:
+            fail("La désignation doit contenir entre 1 et 300 caractères.")
+        if name != name.strip() or type(data.get("active")) is not bool:
+            fail("Désignation ou état invalide.")
+
+    def list_designations(self):
+        with self.connection() as db:
+            entries = [json.loads(row[0]) for row in db.execute("SELECT body FROM objects WHERE kind='designation'")]
+        return sorted((entry for entry in entries if entry["active"]), key=lambda entry: (entry["name"].casefold(), entry["id"]))
+
+    def save_designation(self, data, expected_revision=None, actor="ui", operation_id=None):
+        data = deepcopy(data)
+        if not isinstance(data, dict):
+            fail("Désignation invalide.")
+        name = data.get("name")
+        if isinstance(name, str):
+            name = name.strip()
+        active = data.get("active", True)
+        self._validate_designation({"name": name, "active": active})
+
+        def save(db):
+            old = self._get(db, "designation", data["id"]) if data.get("id") else None
+            if old:
+                self._check_revision(old, expected_revision)
+            elif expected_revision is not None:
+                fail("Une nouvelle désignation ne possède pas de révision.")
+            elif active:
+                for row in db.execute("SELECT body FROM objects WHERE kind='designation' ORDER BY id"):
+                    existing = json.loads(row[0])
+                    if existing["active"] and existing["name"].casefold() == name.casefold():
+                        return existing, existing
+            new = {"id": old["id"] if old else str(uuid4()),
+                   "revision": old["revision"] + 1 if old else 1,
+                   "name": name, "active": active}
+            self._put(db, "designation", new["id"], new)
+            return old, new
+        return self._mutation("save_designation", [data, expected_revision], actor, operation_id, save)
 
     def list_templates(self):
         with self.connection() as db:

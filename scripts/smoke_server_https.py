@@ -122,6 +122,13 @@ def main():
                 assert {"Office conflict version", "Train conflict version (copie hors ligne)"} <= names
                 assert offline.pending_count == 0
                 assert list(cache.glob("backups/*.sqlite3"))
+                designation = offline.save_designation({"name": "cotation + label"})
+                assert offline.synchronize()
+                assert designation in second.list_designations()
+                assert not any(obj["kind"] == "designation" for obj in second._call("sync_snapshot")["objects"])
+                assert any(obj["kind"] == "designation" for obj in second.sync_snapshot()["objects"])
+                second.save_designation(dict(designation, active=False), designation["revision"])
+                assert offline.synchronize() and not offline.list_designations()
                 print("PASS: real HTTPS, certificate verification, authorization, two clients, revisions, idempotency, backup, offline restart/edit/sync, conflict copies")
             finally:
                 if offline is not None:

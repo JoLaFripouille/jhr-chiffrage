@@ -260,6 +260,38 @@ def two_works(window):
     window.render()
 
 
+def test_work_footer_hours_amount_and_fixed_scroll_position(window, app):
+    from jhr_chiffrage.core import new_item
+    from PySide6.QtCore import QPoint
+    two_works(window)
+    assert '2 h 00 min' in window.work_summary.text()
+    assert '100,00 € HT' in window.work_summary.text()
+    window.work_tabs.setCurrentIndex(1)
+    assert '3 h 00 min' in window.work_summary.text()
+    assert '150,00 € HT' in window.work_summary.text()
+    window.work_tabs.setCurrentIndex(0)
+    items = window.current['works'][0]['items']
+    child = new_item('Détail')
+    child.update(parent_id=items[0]['id'], duration_minutes=25, quantity='2')
+    items.append(child)
+    for index in range(40):
+        item = new_item(f'Ligne {index}')
+        item.update(mode='fixed', price='0', estimated_minutes=0)
+        items.append(item)
+    window.changed_tree()
+    window.resize(1280, 720)
+    window.show()
+    app.processEvents()
+    assert '2 h 50 min' in window.work_summary.text()
+    assert '141,67 € HT' in window.work_summary.text()
+    position = window.work_summary.mapTo(window, QPoint(0, 0))
+    window.tree.verticalScrollBar().setValue(window.tree.verticalScrollBar().maximum())
+    app.processEvents()
+    assert window.work_summary.mapTo(window, QPoint(0, 0)) == position
+    assert window.work_summary.isVisible()
+    assert position.y() >= window.tree.mapTo(window, QPoint(0, window.tree.height())).y()
+
+
 def test_tabs_keep_unsaved_changes_and_target_active_work(window, monkeypatch):
     two_works(window)
     assert window.work_tabs.count() == 2
