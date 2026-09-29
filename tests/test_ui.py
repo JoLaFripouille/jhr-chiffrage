@@ -289,6 +289,7 @@ def test_work_footer_hours_amount_and_fixed_scroll_position(window, app):
     app.processEvents()
     assert window.work_summary.mapTo(window, QPoint(0, 0)) == position
     assert window.work_summary.isVisible()
+    assert position.y() >= window.tree.mapTo(window, QPoint(0, window.tree.height())).y()
     for width in (1280, 1460):
         window.resize(width, 720)
         window.tree.setColumnWidth(3, 130)
@@ -298,7 +299,6 @@ def test_work_footer_hours_amount_and_fixed_scroll_position(window, app):
             assert field.width() == window.tree.columnWidth(column)
             assert field.font().bold()
 
-    assert position.y() >= window.tree.mapTo(window, QPoint(0, window.tree.height())).y()
 
 
 def test_tabs_keep_unsaved_changes_and_target_active_work(window, monkeypatch):
