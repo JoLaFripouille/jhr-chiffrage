@@ -2,19 +2,20 @@
 from __future__ import annotations
 
 import copy
+import logging
 import sys
 import uuid
 from pathlib import Path
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
-from PySide6.QtCore import Qt, QTimer, QThread, QPointF, Signal
-from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPainter, QPen, QColor, QIcon, QPixmap, QPalette
+from PySide6.QtCore import Qt, QTimer, QThread, QPointF, Signal, QUrl
+from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPainter, QPen, QColor, QIcon, QPixmap, QPalette, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSplitter, QTabWidget,
     QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QTabBar,
-    QFrame, QSizePolicy, QHeaderView, QToolButton, QMenu, QSpinBox, QAbstractSpinBox, QTreeWidgetItemIterator,
+    QFrame, QSizePolicy, QHeaderView, QToolButton, QMenu, QSpinBox, QAbstractSpinBox,
     QStyledItemDelegate, QStyleOptionViewItem, QStyle, QCompleter,
 )
 from . import __version__
@@ -121,6 +122,15 @@ class WorkTotalsFooter(QWidget):
 
     def text(self):
         return f"{self.caption.text()} : {self.hours.text()} · {self.amount.text()} HT"
+
+
+def tree_nodes(tree):
+    """Traverse owned items without retaining a native Qt item iterator."""
+    pending = [tree.topLevelItem(i) for i in reversed(range(tree.topLevelItemCount()))]
+    while pending:
+        node = pending.pop()
+        yield node
+        pending.extend(node.child(i) for i in reversed(range(node.childCount())))
 
 
 class PostTree(QTreeWidget):
@@ -427,6 +437,27 @@ class ItemDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
         self.adjustSize()
+        self.recovery_owner = parent if hasattr(parent, "write_recovery") else None
+        if self.recovery_owner is not None:
+            self.label.textChanged.connect(self.capture_recovery)
+            self.mode.currentIndexChanged.connect(self.capture_recovery)
+            for field in self.fields.values():
+                if isinstance(field, DurationInput):
+                    field.hours.valueChanged.connect(self.capture_recovery)
+                    field.minutes.valueChanged.connect(self.capture_recovery)
+                else:
+                    field.textChanged.connect(self.capture_recovery)
+            self.finished.connect(self.clear_recovery)
+
+    def capture_recovery(self, *_):
+        if self.recovery_owner is not None:
+            self.recovery_owner.recovery_editor = self.value()
+            self.recovery_owner.write_recovery()
+
+    def clear_recovery(self, *_):
+        if self.recovery_owner is not None:
+            self.recovery_owner.recovery_editor = None
+            self.recovery_owner.write_recovery()
 
     def refresh_designations(self):
         try:
@@ -721,6 +752,9 @@ class MainWindow(QMainWindow):
     def __init__(self, store=None):
         super().__init__()
         self.store = store if store is not None else open_store()
+        from .recovery import RecoveryFile
+        self.recovery = RecoveryFile(self.store)
+        self.recovery_editor = None
         self.sync_enabled = callable(getattr(self.store, "synchronize", None))
         self.sync_worker = None
         self.close_after_sync = False
@@ -825,6 +859,7 @@ class MainWindow(QMainWindow):
             return
         if QApplication.activeModalWidget() and not manual:
             return
+        logging.getLogger(__name__).info("Synchronization begin manual=%s resolve=%s", manual, resolve)
         self.sync_worker = SyncWorker(self.store, resolve=resolve, parent=self)
         self.sync_worker.finished.connect(lambda: self.finish_sync(manual))
         # Only explicit conflict resolution replaces local working objects in
@@ -835,6 +870,7 @@ class MainWindow(QMainWindow):
         self.sync_worker.start()
 
     def finish_sync(self, manual=False):
+        logging.getLogger(__name__).info("Synchronization finished")
         worker = self.sync_worker
         self.sync_worker = None
         if worker.resolve:
@@ -1093,6 +1129,7 @@ class MainWindow(QMainWindow):
         button("Enregistrer les paramètres", self.save_settings, layout)
         button("Désignations fréquentes…", self.manage_designations, layout)
         button("Créer une sauvegarde des données", self.backup, layout)
+        button("Ouvrir les journaux d’erreurs", self.open_diagnostics, layout)
         connection_label = QLabel("Connexion actuelle : serveur avec copie hors ligne sur ce PC" if self.sync_enabled else "Connexion actuelle : serveur partagé" if isinstance(self.store, RemoteStore) else "Connexion actuelle : cet ordinateur")
         layout.addWidget(connection_label)
         button("Configurer la connexion…", self.configure_connection, layout)
@@ -1101,6 +1138,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(limits)
         layout.addStretch()
         self.tabs.addTab(page, "Paramètres")
+
+    def open_diagnostics(self):
+        from .diagnostics import logs_directory
+        folder = logs_directory()
+        folder.mkdir(parents=True, exist_ok=True)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            QMessageBox.information(self, "Journaux d’erreurs", f"Les journaux se trouvent ici :\n{folder}")
 
     def build_history(self):
         page = QWidget()
@@ -1146,6 +1190,7 @@ class MainWindow(QMainWindow):
 
     def settings_changed(self, *_):
         self.settings_dirty = True
+        self.write_recovery()
 
     def load_settings(self):
         self.settings = self.store.get_settings()
@@ -1161,6 +1206,7 @@ class MainWindow(QMainWindow):
         try:
             self.settings = self.store.save_settings(data, self.settings["revision"])
             self.load_settings()
+            self.write_recovery()
             self.statusBar().showMessage("Paramètres enregistrés pour les nouvelles affaires.", 5000)
             return True
         except DomainError as exc:
@@ -1218,7 +1264,11 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() == save:
             return self.save_current()
-        return box.clickedButton() == discard
+        if box.clickedButton() == discard:
+            self.dirty = False
+            self.write_recovery()
+            return True
+        return False
 
     def select_estimate(self, item, previous=None):
         if self.loading or not item:
@@ -1258,7 +1308,77 @@ class MainWindow(QMainWindow):
         if self.loading or not self.current or self.current["status"] == "frozen":
             return
         self.dirty = True
+        self.write_recovery()
         self.update_totals()
+
+    def write_recovery(self):
+        try:
+            data = {}
+            if self.dirty or self.recovery_editor:
+                data["estimate"] = self.collect()
+                data["work_id"] = self.active_work_id
+                data["editor"] = self.recovery_editor
+            if self.settings_dirty:
+                settings = copy.deepcopy(self.settings)
+                settings.update({key: field.text() for key, field in self.setting_fields.items()})
+                settings["vat_enabled"] = self.vat_enabled.isChecked()
+                data["settings"] = settings
+            self.recovery.write(data)
+        except (OSError, ValueError, TypeError):
+            logging.getLogger(__name__).exception("Safety copy write failed")
+            self.statusBar().showMessage("Copie de secours impossible. Enregistrez votre travail.")
+
+    def restore_recovery(self):
+        try:
+            data = self.recovery.read()
+            if not data:
+                return
+            answer = QMessageBox.question(self, "Travail récupérable",
+                "Une copie de secours contient du travail non enregistré.\nRestaurer ce travail ? Non abandonne cette copie.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if answer != QMessageBox.Yes:
+                self.recovery.write(None)
+                return
+            recovered = data.get("estimate")
+            if recovered:
+                latest = self.store.get_estimate(recovered["id"])
+                if latest["revision"] != recovered["revision"] or latest["status"] != "draft":
+                    # Never silently overwrite a version changed on another PC.
+                    new = self.store.create_estimate(recovered["name"] + " — récupération")
+                    recovered.update(id=new["id"], revision=new["revision"], status="draft",
+                                     name=new["name"], version=new.get("version", 1),
+                                     parent_id=None, settings=new["settings"])
+                    QMessageBox.information(self, "Copie de récupération",
+                        "L’affaire a changé depuis la copie de secours. Le travail est récupéré dans une affaire distincte, aux taux actuels. Vérifiez les montants avant d’enregistrer.")
+                self.current = recovered
+                self.active_work_id = data.get("work_id")
+                self.dirty = True
+                self.render()
+            if data.get("settings"):
+                self.settings = data["settings"]
+                for key, field in self.setting_fields.items():
+                    field.setText(str(self.settings.get(key) or ""))
+                self.vat_enabled.setChecked(bool(self.settings.get("vat_enabled")))
+                self.settings_dirty = True
+            editor = data.get("editor")
+            self.recovery_editor = editor
+            self.write_recovery()
+            if editor and self.current:
+                work = next((w for w in self.current["works"] if w["id"] == data.get("work_id")), None)
+                if work:
+                    dialog = ItemDialog(editor, self)
+                    if dialog.exec():
+                        item = dialog.value()
+                        index = next((i for i, old in enumerate(work["items"]) if old["id"] == item["id"]), None)
+                        if index is None:
+                            work["items"].append(item)
+                        else:
+                            work["items"][index] = item
+                        self.changed_tree()
+            self.statusBar().showMessage("Travail récupéré. Vérifiez puis cliquez sur Enregistrer.", 15000)
+        except (OSError, ValueError, TypeError, KeyError, DomainError) as exc:
+            logging.getLogger(__name__).exception("Safety copy restoration failed")
+            QMessageBox.warning(self, "Récupération impossible", f"La copie est conservée ici :\n{self.recovery.path}\n{exc}")
 
     def collect(self):
         data = copy.deepcopy(self.current)
@@ -1296,18 +1416,16 @@ class MainWindow(QMainWindow):
         self.loading = False
 
     def render_tree(self, rebuild_tabs=True):
+        logging.getLogger(__name__).info("Table refresh begin rebuild_tabs=%s", rebuild_tabs)
         works = (self.current or {}).get("works", [])
         selected = self.tree.currentItem()
         selected_id = selected.data(0, Qt.UserRole) if selected else None
         known, collapsed = set(), set()
-        iterator = QTreeWidgetItemIterator(self.tree)
-        while iterator.value():
-            node = iterator.value()
+        for node in tree_nodes(self.tree):
             ident = node.data(0, Qt.UserRole)
             known.add(ident)
             if node.childCount() and not node.isExpanded():
                 collapsed.add(ident)
-            iterator += 1
         if self._rendered_tree_key is not None:
             self._tree_states[self._rendered_tree_key] = {
                 'selected': selected_id, 'known': known, 'collapsed': collapsed,
@@ -1388,6 +1506,8 @@ class MainWindow(QMainWindow):
         self.tree.editable = editable
         for action in self.work_actions:
             action.setEnabled(editable and bool(work))
+
+        logging.getLogger(__name__).info("Table refresh end")
 
     def change_work_tab(self, index):
         if index < 0:
@@ -1484,8 +1604,8 @@ class MainWindow(QMainWindow):
         return wi, ii
 
     def changed_tree(self):
-        self.render_tree()
         self.mark_dirty()
+        self.render_tree()
 
     def add_work(self):
         if not self.current or self.current["status"] != "draft":
@@ -1534,6 +1654,7 @@ class MainWindow(QMainWindow):
         if parent is None:
             return
         dialog = ItemDialog(parent=self)
+        dialog.original["parent_id"] = parent_id
         dialog.setWindowTitle(f"Sous-poste — {parent['label']}")
         if dialog.exec():
             data = dialog.value()
@@ -1602,9 +1723,7 @@ class MainWindow(QMainWindow):
         insertion = max(i for i, item in enumerate(items) if item['id'] in identifiers) + 1
         items[insertion:insertion] = duplicated
         self.changed_tree()
-        iterator = QTreeWidgetItemIterator(self.tree)
-        while iterator.value():
-            node = iterator.value()
+        for node in tree_nodes(self.tree):
             if node.data(0, Qt.UserRole) == root['id']:
                 parent = node.parent()
                 while parent is not None:
@@ -1613,7 +1732,6 @@ class MainWindow(QMainWindow):
                 self.tree.setCurrentItem(node)
                 self.tree.scrollToItem(node)
                 break
-            iterator += 1
         self.statusBar().showMessage("Poste et sous-postes dupliqués. Pensez à enregistrer.", 5000)
 
     def remove_selected(self):
@@ -1645,6 +1763,7 @@ class MainWindow(QMainWindow):
         try:
             self.current = self.store.save_estimate(self.collect(), self.current["revision"])
             self.dirty = False
+            self.write_recovery()
             self.refresh_lists()
             self.render()
             self.statusBar().showMessage("Affaire enregistrée.", 4000)
@@ -1825,11 +1944,18 @@ class MainWindow(QMainWindow):
         self.timer.stop()
         if self.sync_enabled:
             self.sync_timer.stop()
+        self.dirty = self.settings_dirty = False
+        self.recovery_editor = None
+        self.write_recovery()
+        logging.getLogger(__name__).info("Window closed normally")
         self.closing = True
         event.accept()
 
 
 def main():
+    from .diagnostics import install, install_qt
+    install()
+    install_qt()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("JHR Chiffrage")
     app.setWindowIcon(QIcon(str(Path(__file__).parent / "assets/chiffrage.png")))
@@ -1843,6 +1969,7 @@ def main():
             if not ConnectionDialog().exec():
                 return 1
     window.show()
+    window.restore_recovery()
     return app.exec()
 
 

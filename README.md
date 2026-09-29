@@ -65,3 +65,9 @@ python scripts/build_linux_bundle.py
 ```
 
 Les tests couvrent calculs, persistance, conflits, sous-postes, Qt et MCP. Le démarrage graphique doit aussi être vérifié sur chaque système. Le premier jet exporte des fichiers JSON ; pas encore de devis PDF ni de gestion des encaissements. Les taux fiscaux sont renseignés par l'utilisateur.
+
+## Journaux d’erreurs
+
+Dans **Paramètres → Ouvrir les journaux d’erreurs**, retrouver le journal de chaque lancement. Ils sont conservés localement dans `~/.jhr-chiffrage/logs` (dossier utilisateur sous Windows également), y compris sans console. Les traces Python, messages Qt et traces de plantage natif disponibles y sont écrits ; les 20 sessions les plus récentes sont conservées. Après une fermeture inattendue, conserver le dernier fichier `desktop-*.log` pour le diagnostic.
+
+Les affaires et les paramètres en cours de modification sont copiés automatiquement dans un fichier de secours local, avant actualisation du tableau. Les champs de la fenêtre de poste sont également conservés pendant la saisie. Après une fermeture inattendue, l’application propose de restaurer cette copie. Vérifier puis **Enregistrer** pour conserver et synchroniser le travail récupéré. Si l’affaire a changé ailleurs, la récupération crée une affaire distincte aux taux actuels pour préserver l’original. Annuler explicitement une saisie ou abandonner des modifications retire la copie correspondante. Cette protection ne remplace pas les sauvegardes de la base.
