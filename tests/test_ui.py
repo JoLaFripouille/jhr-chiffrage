@@ -341,6 +341,44 @@ def test_principal_hours_include_quantities_and_all_generations(window, app):
     assert duration_text(calculate(window.current)['hours']) == '2 h 55 min'
 
 
+def test_header_toggles_total_hours_without_changing_data_or_tree(window, app):
+    from copy import deepcopy
+    from PySide6.QtCore import QPoint
+    from jhr_chiffrage.core import new_item
+    two_works(window)
+    root = window.current['works'][0]['items'][0]
+    root.update(hours=None, duration_minutes=60)
+    child = new_item('Detail')
+    child.update(parent_id=root['id'], duration_minutes=15)
+    window.current['works'][0]['items'].append(child)
+    window.changed_tree()
+    window.save_current()
+    before = deepcopy(window.current)
+    window.show()
+    app.processEvents()
+    node = window.tree.topLevelItem(0)
+    node.setExpanded(False)
+    window.tree.setCurrentItem(node)
+    header = window.tree.header()
+    point = QPoint(header.sectionViewportPosition(TOTAL_HOURS_COLUMN) + 20, header.height() // 2)
+    QTest.mouseClick(header.viewport(), Qt.LeftButton, pos=point)
+    assert node.text(TOTAL_HOURS_COLUMN) == '1,25 h'
+    assert node.text(3) == '1 h 00 min'
+    assert node.child(0).text(TOTAL_HOURS_COLUMN) == ''
+    assert window.work_summary.hours.text() == '1,25 h'
+    assert window.tree.currentItem() is node and not node.isExpanded()
+    assert window.current == before and not window.dirty
+    assert window.total_hours_text('0') == '0,00 h'
+    assert window.total_hours_text(str(31 / 60)) == '0,52 h'
+    window.work_tabs.setCurrentIndex(1)
+    assert window.work_summary.hours.text() == '3,00 h'
+    window.work_tabs.setCurrentIndex(0)
+    assert window.tree.topLevelItem(0).text(TOTAL_HOURS_COLUMN) == '1,25 h'
+    QTest.mouseClick(header.viewport(), Qt.LeftButton, pos=point)
+    assert window.work_summary.hours.text() == '1 h 15 min'
+    assert window.current == before and not window.dirty
+
+
 def test_tabs_keep_unsaved_changes_and_target_active_work(window, monkeypatch):
     two_works(window)
     assert window.work_tabs.count() == 2

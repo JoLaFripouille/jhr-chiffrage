@@ -958,6 +958,7 @@ class MainWindow(QMainWindow):
     def __init__(self, store=None):
         super().__init__()
         self.store = store if store is not None else open_store()
+        self.decimal_total_hours = False
         from .recovery import RecoveryFile, AutosavePreferences
         self.recovery = RecoveryFile(self.store)
         self.recovery_editor = None
@@ -1271,12 +1272,14 @@ class MainWindow(QMainWindow):
         self.tree.setColumnWidth(TOTAL_HOURS_COLUMN, 100)
         self.tree.setColumnWidth(5, 105)
         self.tree.setColumnWidth(POST_AMOUNT_COLUMN, 100)
+        self.tree.header().setSectionsClickable(True)
+        self.tree.header().sectionClicked.connect(self.toggle_total_hours)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         for column in (2, 3, TOTAL_HOURS_COLUMN, 5, POST_AMOUNT_COLUMN, TOTAL_COLUMN):
             self.tree.headerItem().setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
         self.tree.headerItem().setToolTip(3, "Durée propre saisie : par unité en mode horaire, charge totale en mode forfait.")
-        self.tree.headerItem().setToolTip(TOTAL_HOURS_COLUMN, "Temps du poste principal et de tous ses descendants, quantités comprises. Affiché uniquement au premier niveau.")
+        self.tree.headerItem().setToolTip(TOTAL_HOURS_COLUMN, "Cliquez pour basculer entre heures/minutes et heures décimales (arrondies à 2 décimales). Total du poste principal et de ses descendants, quantités comprises.")
         self.tree.headerItem().setToolTip(POST_AMOUNT_COLUMN, "Montant propre à cette ligne, sans ses sous-postes.")
         self.tree.headerItem().setToolTip(TOTAL_COLUMN, "Total du poste principal et de tous ses descendants. Affiché uniquement au premier niveau.")
         self.tree.itemDoubleClicked.connect(lambda *_: self.edit_selected())
@@ -1759,11 +1762,13 @@ class MainWindow(QMainWindow):
                 child = QTreeWidgetItem([item["label"], "Horaire" if hourly else "Forfait",
                                         str(item.get("quantity") or ""),
                                         duration_text(item.get("hours" if hourly else "estimated_hours"), item.get("duration_minutes" if hourly else "estimated_minutes")),
-                                        duration_text(principal_hours[item["id"]]) if item["id"] in principal_hours else "",
+                                        self.total_hours_text(principal_hours[item["id"]]) if item["id"] in principal_hours else "",
                                         str(item.get("rate" if hourly else "price") or ("Taux affaire" if hourly else "—")),
                                         money(amounts.get(item["id"], 0)),
                                         money(principal_totals[item["id"]]) if item["id"] in principal_totals else ""])
                 child.setData(0, Qt.UserRole, item["id"])
+                if item["id"] in principal_hours:
+                    child.setData(TOTAL_HOURS_COLUMN, Qt.UserRole, str(principal_hours[item["id"]]))
                 evidence = [item["label"]]
                 for field, title in (("cctp_reference", "CCTP"), ("time_basis", "Estimation du temps"), ("notes", "Notes")):
                     if item.get(field):
@@ -1808,6 +1813,23 @@ class MainWindow(QMainWindow):
             action.setEnabled(editable and bool(work))
 
         logging.getLogger(__name__).info("Table refresh end")
+
+    def total_hours_text(self, hours):
+        if self.decimal_total_hours:
+            value = Decimal(str(hours)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            return f"{value:.2f} h".replace(".", ",")
+        return duration_text(hours)
+
+    def toggle_total_hours(self, column):
+        if column != TOTAL_HOURS_COLUMN:
+            return
+        self.decimal_total_hours = not self.decimal_total_hours
+        # Update cells in place: preserve selection, scroll and collapsed branches.
+        for node in tree_nodes(self.tree):
+            hours = node.data(TOTAL_HOURS_COLUMN, Qt.UserRole)
+            if hours is not None:
+                node.setText(TOTAL_HOURS_COLUMN, self.total_hours_text(hours))
+        self.update_work_summary()
 
     def change_work_tab(self, index):
         if index < 0:
@@ -1857,7 +1879,7 @@ class MainWindow(QMainWindow):
         try:
             result = result if result is not None else calculate(self.collect())
             totals = next(row for row in result['works'] if row['id'] == work['id'])
-            self.work_summary.set_totals(duration_text(totals["hours"]), money(totals["ht_cents"]))
+            self.work_summary.set_totals(self.total_hours_text(totals["hours"]), money(totals["ht_cents"]))
             self.work_summary.setToolTip(f"{work['name']} · {len(work['items'])} poste(s), sous-postes compris.\nSomme des durées et des montants HT ; les charges renseignées pour les forfaits sont incluses."
                                          + ("\nChiffrage incomplet : voir les indications sous la synthèse." if result['incomplete'] else ""))
         except (DomainError, StopIteration):
