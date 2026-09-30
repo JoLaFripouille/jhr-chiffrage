@@ -370,12 +370,25 @@ def test_header_toggles_total_hours_without_changing_data_or_tree(window, app):
     assert window.current == before and not window.dirty
     assert window.total_hours_text('0') == '0,00 h'
     assert window.total_hours_text(str(31 / 60)) == '0,52 h'
+    entered_point = QPoint(header.sectionViewportPosition(3) + 20, header.height() // 2)
+    QTest.mouseClick(header.viewport(), Qt.LeftButton, pos=entered_point)
+    assert node.text(3) == '1,00 h'
+    assert node.child(0).text(3) == '0,25 h'
+    assert node.text(TOTAL_HOURS_COLUMN) == '1,25 h'
+    assert window.entered_hours_text() == '—'
+    assert window.entered_hours_text(minutes=0) == '0,00 h'
+    assert window.entered_hours_text('1.111111') == '1,11 h'
     window.work_tabs.setCurrentIndex(1)
     assert window.work_summary.hours.text() == '3,00 h'
     window.work_tabs.setCurrentIndex(0)
     assert window.tree.topLevelItem(0).text(TOTAL_HOURS_COLUMN) == '1,25 h'
+    assert window.tree.topLevelItem(0).text(3) == '1,00 h'
     QTest.mouseClick(header.viewport(), Qt.LeftButton, pos=point)
     assert window.work_summary.hours.text() == '1 h 15 min'
+    assert window.tree.topLevelItem(0).text(3) == '1,00 h'
+    QTest.mouseClick(header.viewport(), Qt.LeftButton, pos=entered_point)
+    assert window.tree.topLevelItem(0).text(3) == '1 h 00 min'
+    assert window.tree.topLevelItem(0).child(0).text(3) == '0 h 15 min'
     assert window.current == before and not window.dirty
 
 
