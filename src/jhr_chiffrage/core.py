@@ -196,13 +196,55 @@ def clone_items(items):
     return copied
 
 
+def _hierarchical_extras(works, charges, budget):
+    """Allocate fractional cents down the tree; each subtotal is a floor or ceiling of its exact charge."""
+    if not charges:
+        return []
+    children = {None: []}
+    by_item = {entry[1]: entry for entry in charges}
+    fractions = {}
+    for work in works:
+        wid = work["id"]
+        children[None].append(wid)
+        children[wid] = []
+        for item in work["items"]:
+            iid = item["id"]
+            children.setdefault(item.get("parent_id") or wid, []).append(iid)
+            children.setdefault(iid, [])
+            if iid in by_item:
+                # An internal node can have both its own charge and priced children.
+                leaf = (iid,)
+                children[iid].append(leaf)
+                fractions[leaf] = by_item[iid][0]
+    order = [None]
+    for node in order:
+        order.extend(children.get(node, ()))
+    for node in reversed(order):
+        if node in children:
+            fractions[node] = sum((fractions[ch] for ch in children[node]), Fraction())
+    selected = []
+    pending = [(None, budget)]
+    while pending:
+        node, share = pending.pop()
+        if not share:
+            continue
+        if node not in children:
+            selected.append(by_item[node[0]])
+            continue
+        parts = [(ch, *divmod(fractions[ch], 1)) for ch in children[node]]
+        remaining = share - sum(base for _, base, _ in parts)
+        parts.sort(key=lambda part: (-part[2], str(part[0])))
+        pending.extend((ch, base + (rank < remaining)) for rank, (ch, base, _) in enumerate(parts))
+    return selected
+
+
 def calculate(estimate):
     settings = checked_settings(estimate.get("settings", {}), allow_missing=True)
     incomplete, lines, work_totals = [], [], []
     total = 0
     hours_total = Decimal(0)
     shared_charges = []
-    legacy = estimate.get("status") == "frozen" and estimate.get("calculation_version", 1) == 1
+    version = estimate.get("calculation_version", 1) if estimate.get("status") == "frozen" else 3
     works = estimate.get("works", [])
     if not isinstance(works, list) or len(works) > 1000:
         fail("Liste d'ouvrages invalide (maximum 1000).")
@@ -269,7 +311,7 @@ def calculate(estimate):
             else:
                 fail(f"{name} : mode de calcul inconnu.")
             value = cents(amount) if amount is not None else 0
-            if mode == "hourly" and amount is not None and raw_rate in (None, "") and not legacy:
+            if mode == "hourly" and amount is not None and raw_rate in (None, "") and version != 1:
                 # Exact cents at the shared estimate rate; never pool explicit prices.
                 unit = (Fraction(item["duration_minutes"], 60) if item.get("duration_minutes") is not None
                         else Fraction(unit_hours))
@@ -288,7 +330,9 @@ def calculate(estimate):
     # Largest remainders: round the shared charge once, allocate only fractional
     # cents. Stable IDs keep the same line amounts when the user reorders posts.
     extra = int(sum((entry[0] for entry in shared_charges), Fraction(1, 2)))
-    for _, _, line_index, work_index in sorted(shared_charges, key=lambda e: (-e[0], e[1]))[:extra]:
+    allocated = (sorted(shared_charges, key=lambda e: (-e[0], e[1]))[:extra] if version == 2
+                 else _hierarchical_extras(works, shared_charges, extra))
+    for _, _, line_index, work_index in allocated:
         lines[line_index]["ht_cents"] += 1
         work_totals[work_index]["ht_cents"] += 1
     total += extra
@@ -503,7 +547,7 @@ class Store:
         checked_settings(body["settings"], allow_missing=True)
         totals = calculate(body)
         if body["status"] == "frozen":
-            if totals["incomplete"] or body.get("frozen_totals") != totals or body.get("calculation_version") not in (1, 2) or body["revision"] < 2:
+            if totals["incomplete"] or body.get("frozen_totals") != totals or body.get("calculation_version") not in (1, 2, 3) or body["revision"] < 2:
                 fail("Le chiffrage figé est incomplet ou ses totaux sont incohérents.")
             datetime.fromisoformat(body["frozen_at"])
         elif any(k in body for k in ("frozen_at", "frozen_totals", "calculation_version")):
@@ -571,7 +615,7 @@ class Store:
             if totals["incomplete"]:
                 fail("Chiffrage incomplet : " + "; ".join(totals["incomplete"]))
             new = deepcopy(old)
-            new.update(status="frozen", revision=old["revision"] + 1, frozen_at=now(), updated_at=now(), frozen_totals=totals, calculation_version=2)
+            new.update(status="frozen", revision=old["revision"] + 1, frozen_at=now(), updated_at=now(), frozen_totals=totals, calculation_version=3)
             self._put(db, "estimate", id, new)
             return old, new
         return self._mutation("freeze_estimate", [id, expected_revision], actor, operation_id, freeze)

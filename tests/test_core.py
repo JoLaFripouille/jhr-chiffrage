@@ -329,7 +329,7 @@ def test_hourly_charge_rounds_shared_rate_once_and_reconciles(store):
     assert result['vat_cents'] == 16000
     assert calculate(dict(obj, status='frozen', calculation_version=1))['ht_cents'] == 79999
     frozen = store.freeze_estimate(obj['id'], store.save_estimate(obj, obj['revision'])['revision'])
-    assert frozen['calculation_version'] == 2 and frozen['frozen_totals'] == calculate(frozen)
+    assert frozen['calculation_version'] == 3 and frozen['frozen_totals'] == calculate(frozen)
     old = {x['id']:x['ht_cents'] for x in result['lines']}
     first['items'].reverse()
     obj['works'].reverse()
@@ -338,3 +338,24 @@ def test_hourly_charge_rounds_shared_rate_once_and_reconciles(store):
     mixed = calculate(obj)
     assert mixed['ht_cents'] == 80000 + 3*1333 + 1001
     assert all(old[x['id']] == x['ht_cents'] for x in mixed['lines'] if x['id'] in old)
+
+def test_cent_allocation_respects_each_work_and_each_nested_branch(store):
+    obj = filled(store)
+    # Sorting IDs globally places both extra cents in the first branch.
+    def branch(root, ids):
+        return [dict(new_item(root), id=root, duration_minutes=0)] + [
+            dict(new_item(i), id=i, parent_id=root, duration_minutes=10) for i in ids]
+    a = branch('R1', ['a','b','c'])
+    b = branch('R2', ['d','e','f'])
+    obj['works'] = [dict(id='w1', name='W1', items=a), dict(id='w2',name='W2',items=b)]
+    old = calculate(dict(obj, status='frozen', calculation_version=2))
+    assert [w['ht_cents'] for w in old['works']] == [4001, 3999]
+    result = calculate(obj)
+    assert [w['ht_cents'] for w in result['works']] == [4000,4000]
+    a[0]['parent_id'] = 'top'
+    b[0]['parent_id'] = 'top'
+    obj['works'] = [dict(id='w',name='W',items=list(reversed(a+b))+[dict(new_item('Top'),id='top',duration_minutes=30)])]
+    result = calculate(obj)
+    amounts = {x['id']:x['ht_cents'] for x in result['lines']}
+    assert all(sum(amounts[i['id']] for i in group)==4000 for group in (a,b))
+    assert amounts['top']==4000 and result['ht_cents']==12000
