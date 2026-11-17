@@ -5,6 +5,7 @@ from contextlib import contextmanager, closing
 from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from fractions import Fraction
 import hashlib
 import json
 import os
@@ -200,6 +201,8 @@ def calculate(estimate):
     incomplete, lines, work_totals = [], [], []
     total = 0
     hours_total = Decimal(0)
+    shared_charges = []
+    legacy = estimate.get("status") == "frozen" and estimate.get("calculation_version", 1) == 1
     works = estimate.get("works", [])
     if not isinstance(works, list) or len(works) > 1000:
         fail("Liste d'ouvrages invalide (maximum 1000).")
@@ -266,6 +269,14 @@ def calculate(estimate):
             else:
                 fail(f"{name} : mode de calcul inconnu.")
             value = cents(amount) if amount is not None else 0
+            if mode == "hourly" and amount is not None and raw_rate in (None, "") and not legacy:
+                # Exact cents at the shared estimate rate; never pool explicit prices.
+                unit = (Fraction(item["duration_minutes"], 60) if item.get("duration_minutes") is not None
+                        else Fraction(unit_hours))
+                exact = unit * Fraction(qty) * Fraction(rate) * 100
+                value, remainder = divmod(exact, 1)
+                if remainder:
+                    shared_charges.append((remainder, iid, len(lines), len(work_totals)))
             if value > 10**15:
                 fail("Montant de poste trop élevé.")
             lines.append({"id": iid, "ht_cents": value, "hours": str(duration)})
@@ -274,6 +285,13 @@ def calculate(estimate):
         work_totals.append({"id": wid, "ht_cents": work_ht, "hours": str(work_hours)})
         total += work_ht
         hours_total += work_hours
+    # Largest remainders: round the shared charge once, allocate only fractional
+    # cents. Stable IDs keep the same line amounts when the user reorders posts.
+    extra = int(sum((entry[0] for entry in shared_charges), Fraction(1, 2)))
+    for _, _, line_index, work_index in sorted(shared_charges, key=lambda e: (-e[0], e[1]))[:extra]:
+        lines[line_index]["ht_cents"] += 1
+        work_totals[work_index]["ht_cents"] += 1
+    total += extra
     vat_rate = number(settings["vat_rate"], "TVA", optional=True, maximum="100")
     levy_rate = number(settings["levy_rate"], "Prélèvements", optional=True, maximum="100")
     if settings["vat_enabled"] and vat_rate is None:
@@ -485,7 +503,7 @@ class Store:
         checked_settings(body["settings"], allow_missing=True)
         totals = calculate(body)
         if body["status"] == "frozen":
-            if totals["incomplete"] or body.get("frozen_totals") != totals or body.get("calculation_version") != 1 or body["revision"] < 2:
+            if totals["incomplete"] or body.get("frozen_totals") != totals or body.get("calculation_version") not in (1, 2) or body["revision"] < 2:
                 fail("Le chiffrage figé est incomplet ou ses totaux sont incohérents.")
             datetime.fromisoformat(body["frozen_at"])
         elif any(k in body for k in ("frozen_at", "frozen_totals", "calculation_version")):
@@ -553,7 +571,7 @@ class Store:
             if totals["incomplete"]:
                 fail("Chiffrage incomplet : " + "; ".join(totals["incomplete"]))
             new = deepcopy(old)
-            new.update(status="frozen", revision=old["revision"] + 1, frozen_at=now(), updated_at=now(), frozen_totals=totals, calculation_version=1)
+            new.update(status="frozen", revision=old["revision"] + 1, frozen_at=now(), updated_at=now(), frozen_totals=totals, calculation_version=2)
             self._put(db, "estimate", id, new)
             return old, new
         return self._mutation("freeze_estimate", [id, expected_revision], actor, operation_id, freeze)

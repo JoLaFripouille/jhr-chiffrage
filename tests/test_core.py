@@ -315,3 +315,26 @@ def test_deep_hierarchy_uses_iterative_validation(store):
     items[0]["parent_id"] = items[-1]["id"]
     with pytest.raises(DomainError, match="cycle"):
         calculate(obj)
+
+def test_hourly_charge_rounds_shared_rate_once_and_reconciles(store):
+    obj = filled(store)
+    first, second = obj['works']
+    def entry(minutes, **kwargs):
+        return dict(new_item('Minute'), duration_minutes=minutes, **kwargs)
+    first['items'] = [entry(10), entry(10)]
+    second['items'] = [entry(10), entry(570)]
+    result = calculate(obj)
+    assert result['ht_cents'] == sum(w['ht_cents'] for w in result['works']) == 80000
+    assert sorted(x['ht_cents'] for x in result['lines']) == [1333, 1333, 1334, 76000]
+    assert result['vat_cents'] == 16000
+    assert calculate(dict(obj, status='frozen', calculation_version=1))['ht_cents'] == 79999
+    frozen = store.freeze_estimate(obj['id'], store.save_estimate(obj, obj['revision'])['revision'])
+    assert frozen['calculation_version'] == 2 and frozen['frozen_totals'] == calculate(frozen)
+    old = {x['id']:x['ht_cents'] for x in result['lines']}
+    first['items'].reverse()
+    obj['works'].reverse()
+    second['items'].extend([entry(10,rate='80'),entry(10,rate='80'),entry(10,rate='80'),
+                            dict(new_item('Forfait'),mode='fixed',price='10.005')])
+    mixed = calculate(obj)
+    assert mixed['ht_cents'] == 80000 + 3*1333 + 1001
+    assert all(old[x['id']] == x['ht_cents'] for x in mixed['lines'] if x['id'] in old)
